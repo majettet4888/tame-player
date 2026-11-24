@@ -1013,6 +1013,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             child: ClipRRect(
               borderRadius: radius,
               child: Stack(children: [
+                if (lift)
+                  const Positioned.fill(
+                    child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(gradient: TP.sheen))),
+                  ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 7, 10, 0),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1021,7 +1025,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                       maxLines: 1,
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
-                      style: ts(16, w: FontWeight.w600, c: focus ? TP.ink : (p.placeholder ? const Color(0xFF9DB0C4) : TP.text)),
+                      style: ts(16, w: focus ? FontWeight.w800 : FontWeight.w600, c: focus ? const Color(0xFF050B14) : (p.placeholder ? const Color(0xFF9DB0C4) : TP.text)),
                     ),
                     if (w > 110 && !p.placeholder)
                       Text(
@@ -1029,15 +1033,11 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.clip,
-                        style: ts(13, c: focus ? const Color(0xFF33475C) : TP.dim2),
+                        style: ts(13, w: focus ? FontWeight.w600 : FontWeight.w400, c: focus ? const Color(0xFF1B2B3D) : TP.dim2),
                       ),
                   ]),
                 ),
                 if (focus) Positioned(left: 0, top: 0, bottom: 0, width: 5, child: Container(color: TP.orange)),
-                if (lift)
-                  const Positioned.fill(
-                    child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(gradient: TP.sheen))),
-                  ),
               ]),
             ),
           ),

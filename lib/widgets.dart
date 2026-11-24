@@ -163,13 +163,6 @@ class LiftItem extends StatelessWidget {
           child: ClipRRect(
             borderRadius: r,
             child: Stack(children: [
-              Padding(
-                padding: padding,
-                child: DefaultTextStyle(
-                  style: ts(18, c: focused ? TP.ink : TP.text),
-                  child: child,
-                ),
-              ),
               if (lift)
                 Positioned.fill(
                   child: IgnorePointer(
@@ -185,6 +178,13 @@ class LiftItem extends StatelessWidget {
                     ),
                   ),
                 ),
+              Padding(
+                padding: padding,
+                child: DefaultTextStyle(
+                  style: ts(18, w: focused ? FontWeight.w700 : FontWeight.w400, c: focused ? const Color(0xFF050B14) : TP.text),
+                  child: child,
+                ),
+              ),
             ]),
           ),
         ),
