@@ -46,6 +46,9 @@ class AppState extends ChangeNotifier {
 
   Set<int> favs = {};
   Set<String> hiddenGroups = {};
+  Set<int> hiddenCh = {};
+  Map<int, String> renames = {};
+  Set<String> lockedGroups = {};
   int? lastChannelId;
   bool use24 = false;
   String fx = 'subtle';
@@ -80,7 +83,8 @@ class AppState extends ChangeNotifier {
   void resetRange() {
     final n = floor30(DateTime.now());
     rangeStart = n.subtract(const Duration(hours: 4));
-    rangeEnd = n.add(const Duration(hours: 24));
+    final days = int.tryParse(_prefs.getString('opt_days') ?? '1') ?? 1;
+    rangeEnd = n.add(Duration(hours: 24 * days));
     _epg.clear();
     _placeholders.clear();
   }
@@ -116,6 +120,18 @@ class AppState extends ChangeNotifier {
       favs = {for (final s in _prefs.getStringList('favs_${a.key}') ?? const <String>[]) int.tryParse(s) ?? -1}..remove(-1);
       lastChannelId = _prefs.getInt('last_${a.key}');
       hiddenGroups = (_prefs.getStringList('hidden_${a.key}') ?? const <String>[]).toSet();
+      hiddenCh = {for (final x in _prefs.getStringList('hiddench_${a.key}') ?? const <String>[]) int.tryParse(x) ?? -1}..remove(-1);
+      lockedGroups = (_prefs.getStringList('locks_${a.key}') ?? const <String>[]).toSet();
+      renames = {};
+      try {
+        final raw = _prefs.getString('renames_${a.key}');
+        if (raw != null) {
+          (jsonDecode(raw) as Map).forEach((k, v) {
+            final id = int.tryParse('$k');
+            if (id != null) renames[id] = '$v';
+          });
+        }
+      } catch (_) {}
       channels = ch;
     } catch (e) {
       error = friendlyError(e);
@@ -157,7 +173,7 @@ class AppState extends ChangeNotifier {
   String opt(String key, String def) => _prefs.getString('opt_$key') ?? def;
   void setOpt(String key, String v) {
     _prefs.setString('opt_$key', v);
-    if (key == 'shift') {
+    if (key == 'shift' || key == 'days') {
       resetRange();
       _pending.clear();
       _queue.clear();
@@ -181,6 +197,38 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  String nameOf(Channel c) => renames[c.id] ?? c.name;
+
+  void rename(int id, String name) {
+    final n = name.trim();
+    if (n.isEmpty) {
+      renames.remove(id);
+    } else {
+      renames[id] = n;
+    }
+    final a = acc;
+    if (a != null) _prefs.setString('renames_${a.key}', jsonEncode({for (final e in renames.entries) '${e.key}': e.value}));
+    notifyListeners();
+  }
+
+  void toggleHiddenCh(int id) {
+    if (!hiddenCh.remove(id)) hiddenCh.add(id);
+    final a = acc;
+    if (a != null) _prefs.setStringList('hiddench_${a.key}', [for (final x in hiddenCh) '$x']);
+    notifyListeners();
+  }
+
+  void toggleLock(String groupId) {
+    if (!lockedGroups.remove(groupId)) lockedGroups.add(groupId);
+    final a = acc;
+    if (a != null) _prefs.setStringList('locks_${a.key}', lockedGroups.toList());
+    notifyListeners();
+  }
+
+  bool isLocked(Channel c) => opt('pin', '').isNotEmpty && lockedGroups.contains(c.catId);
+
+  Map<int, List<Program>> get loadedEpg => _epg;
+
   List<ChannelGroup> get visibleCats => cats.where((c) => !hiddenGroups.contains(c.id)).toList();
 
   void toggleHidden(String groupId) {
@@ -201,11 +249,11 @@ class AppState extends ChangeNotifier {
 
   List<Channel> listFor(ChannelGroup c) {
     if (c.id == '__all') {
-      if (hiddenGroups.isEmpty) return channels;
-      return channels.where((x) => !hiddenGroups.contains(x.catId)).toList();
+      if (hiddenGroups.isEmpty && hiddenCh.isEmpty) return channels;
+      return channels.where((x) => !hiddenGroups.contains(x.catId) && !hiddenCh.contains(x.id)).toList();
     }
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).toList();
-    return channels.where((x) => x.catId == c.id).toList();
+    return channels.where((x) => x.catId == c.id && !hiddenCh.contains(x.id)).toList();
   }
 
   void toggleFav(int id) {

@@ -15,7 +15,7 @@ import 'updater.dart';
 import 'widgets.dart';
 import 'xtream.dart';
 
-enum Area { guide, menu, full, settings, dialog }
+enum Area { guide, menu, full, settings, dialog, input }
 
 const double kRowH = 58, kChW = 300;
 const double kPxPerMin = 980 / 150; // 30 minutes = 196 px
@@ -32,6 +32,13 @@ class _SetItem {
         change = null,
         button = false,
         header = true;
+}
+
+class _Result {
+  final Channel ch;
+  final Program? p;
+  final String title, sub;
+  _Result(this.ch, this.p, this.title, this.sub);
 }
 
 class _MenuItem {
@@ -66,6 +73,19 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   int get rows => clampI(((sh - 300 - 36 - 30) / kRowH).floor(), 3, 30);
   int get winMin => ((sw - kChW) / kPxPerMin).floor();
   String _catId = '__all';
+  Area _panelFrom = Area.guide;
+  Channel? _optCh;
+  String _inputMode = 'search';
+  final TextEditingController _inputCtl = TextEditingController();
+  late final FocusNode _inputFocus = FocusNode(onKeyEvent: _onInputKey);
+  List<_Result> _results = [];
+  int resIdx = 0;
+  bool _unlocked = false;
+  VoidCallback? _afterPin;
+  int _retries = 0;
+  Timer? _retryTimer;
+  DateTime? _okDown;
+  bool _longFired = false;
   UpdateInfo? _upd;
   double? _updProg;
   final GlobalKey _setFocusKey = GlobalKey();
@@ -92,8 +112,19 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       if (mounted) setState(() => buffering = b);
     }));
     _subs.add(player.stream.width.listen((w) {
-      if (mounted) setState(() => hasVideo = (w ?? 0) > 0);
+      if (!mounted) return;
+      setState(() {
+        hasVideo = (w ?? 0) > 0;
+        if (hasVideo) {
+          _retries = 0;
+          playError = null;
+        }
+      });
     }));
+    _subs.add(player.stream.completed.listen((done) {
+      if (done) _scheduleReconnect(); // a live channel should never "finish": the stream dropped
+    }));
+    _applyPlayerProps();
     _subs.add(player.stream.error.listen(_onPlayError));
     _tick = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted) return;
@@ -118,6 +149,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     _tick?.cancel();
     _osdTimer?.cancel();
     _toastTimer?.cancel();
+    _retryTimer?.cancel();
+    _inputCtl.dispose();
+    _inputFocus.dispose();
     stripes.dispose();
     _menuScroll.dispose();
     _focus.dispose();
@@ -159,12 +193,52 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _open(alt: true);
       return;
     }
-    setState(() => playError = 'This channel isn\'t playing right now');
+    _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (!mounted || playingId == null || paused) return;
+    if (app.opt('reconnect', 'on') != 'on' || _retries >= 5) {
+      setState(() => playError = 'This channel isn\'t playing right now');
+      return;
+    }
+    _retries++;
+    setState(() => playError = 'Reconnecting… ($_retries of 5)');
+    _retryTimer?.cancel();
+    _retryTimer = Timer(Duration(seconds: 2 * _retries), () {
+      if (mounted && playingId != null) _open();
+    });
+  }
+
+  /// Sends the playback settings to the video engine (mpv).
+  Future<void> _applyPlayerProps() async {
+    final pl = player.platform;
+    if (pl == null) return;
+    final d = pl as dynamic;
+    final ahead = app.opt('ahead', '30');
+    final props = <String, String>{
+      'cache': 'yes',
+      'cache-secs': ahead,
+      'demuxer-readahead-secs': ahead,
+      'network-timeout': app.opt('timeout', '20'),
+      'deinterlace': app.opt('deint', 'no'),
+      'alang': app.opt('alang', 'eng,en'),
+      'slang': app.opt('alang', 'eng,en'),
+      'sid': app.opt('subs', 'no') == 'auto' ? 'auto' : 'no',
+      'user-agent': app.opt('ua', 'tame') == 'vlc' ? 'VLC/3.0.20 LibVLC/3.0.20' : 'TamePlayer/0.1',
+    };
+    for (final e in props.entries) {
+      try {
+        await d.setProperty(e.key, e.value);
+      } catch (_) {}
+    }
   }
 
   // ---------------------------------------------------------------- helpers
 
   List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.visibleCats];
+
+  bool get _isFull => area == Area.full || ((area == Area.settings || area == Area.input) && _panelFrom == Area.full);
 
   Channel? get cur => (row >= 0 && row < list.length) ? list[row] : null;
   Channel? get playing => playingId == null ? null : app.byId[playingId];
@@ -234,6 +308,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   // ---------------------------------------------------------------- playback
 
   void _tune(Channel ch) {
+    if (app.isLocked(ch) && !_unlocked) {
+      _askPin(() => _tune(ch));
+      return;
+    }
+    _retries = 0;
+    _retryTimer?.cancel();
     setState(() {
       playingId = ch.id;
       playError = null;
@@ -351,6 +431,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final cats = allCats;
     return [
       for (var i = 0; i < cats.length; i++) _MenuItem('cat', cats[i].name, cat: i, count: app.countFor(cats[i])),
+      _MenuItem('search', '🔍  Search'),
       _MenuItem('settings', '⚙  Settings'),
       _MenuItem('add', '＋  Add a subscription'),
     ];
@@ -362,12 +443,122 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     app.setOpt(key, n);
   }
 
-  _SetItem _choice(String label, String key, String def, Map<String, String> opts, {String note = ''}) {
+  _SetItem _choice(String label, String key, String def, Map<String, String> opts, {String note = '', bool engine = false}) {
     final v = opts[app.opt(key, def)] ?? opts.values.first;
-    return _SetItem(label, note.isEmpty ? v : '$v  ($note)', (d) => _cycle(key, def, opts.keys.toList(), d));
+    return _SetItem(label, note.isEmpty ? v : '$v  ($note)', (d) {
+      _cycle(key, def, opts.keys.toList(), d);
+      if (engine) _applyPlayerProps();
+    });
+  }
+
+  String _trackName(dynamic t, int n) {
+    final title = (t.title as String?)?.trim();
+    final lang = (t.language as String?)?.trim();
+    if (title != null && title.isNotEmpty) return lang != null && lang.isNotEmpty ? '$title ($lang)' : title;
+    if (lang != null && lang.isNotEmpty) return lang.toUpperCase();
+    return 'Track $n';
+  }
+
+  List<_SetItem> _pageItems() {
+    final ch = _optCh;
+    switch (setPage) {
+      case 'channel':
+        if (ch == null) return [_SetItem.header('Channel')];
+        final fav = app.favs.contains(ch.id);
+        final pin = app.opt('pin', '').isNotEmpty;
+        final locked = app.lockedGroups.contains(ch.catId);
+        return [
+          _SetItem.header('${ch.num} · ${app.nameOf(ch)}'),
+          _SetItem('Watch now', '', (d) {
+            _closeSettings();
+            _tune(ch);
+          }, button: true),
+          _SetItem(fav ? 'Remove from Favorites' : 'Add to Favorites', fav ? '★' : '☆', (d) => _toggleFav(ch), button: true),
+          _SetItem('Rename this channel', app.renames.containsKey(ch.id) ? 'renamed' : '', (d) {
+            setState(() => area = Area.guide);
+            _openInput('rename', initial: app.nameOf(ch));
+          }, button: true),
+          _SetItem('Hide this channel', 'Settings › Hidden channels to undo', (d) {
+            app.toggleHiddenCh(ch.id);
+            _closeSettings();
+            _toast('Channel hidden');
+          }, button: true),
+          _SetItem(locked ? 'Unlock this channel\'s group' : 'Lock this channel\'s group', pin ? '' : 'set a PIN first', (d) {
+            if (!pin) {
+              _closeSettings();
+              _openInput('setpin');
+              return;
+            }
+            void doIt() => app.toggleLock(ch.catId);
+            if (_unlocked) {
+              doIt();
+            } else {
+              _askPin(doIt);
+            }
+          }, button: true),
+        ];
+      case 'player':
+        {
+          final tracks = player.state.tracks;
+          final audio = tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
+          final subs = tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
+          final curA = player.state.track.audio;
+          final curS = player.state.track.subtitle;
+          final ai = audio.indexWhere((t) => t.id == curA.id);
+          final si = subs.indexWhere((t) => t.id == curS.id);
+          return [
+            _SetItem.header(ch == null ? 'Player' : 'Now playing · ${app.nameOf(ch)}'),
+            _SetItem('Audio', audio.isEmpty ? 'Default' : (ai < 0 ? 'Automatic' : _trackName(audio[ai], ai + 1)), (d) {
+              if (audio.isEmpty) return;
+              final n = ((ai < 0 ? 0 : ai) + (d < 0 ? audio.length - 1 : 1)) % audio.length;
+              player.setAudioTrack(audio[n]);
+              setState(() {});
+            }),
+            _SetItem('Subtitles', si < 0 ? 'Off' : _trackName(subs[si], si + 1), (d) {
+              if (subs.isEmpty) return _toast('No subtitles on this channel');
+              final n = si + (d < 0 ? -1 : 1); // -1 = off
+              if (n < 0 || n >= subs.length) {
+                player.setSubtitleTrack(SubtitleTrack.no());
+              } else {
+                player.setSubtitleTrack(subs[n]);
+              }
+              setState(() {});
+            }),
+            _choice('Picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
+            if (ch != null)
+              _SetItem(app.favs.contains(ch.id) ? 'Remove from Favorites' : 'Add to Favorites', '', (d) => _toggleFav(ch), button: true),
+            if (ch != null)
+              _SetItem('Channel options', '›', (d) => setState(() {
+                    setPage = 'channel';
+                    setIdx = 1;
+                  }), button: true),
+            _SetItem('Reconnect this channel', '', (d) {
+              _closeSettings();
+              _retries = 0;
+              _open();
+            }, button: true),
+          ];
+        }
+      case 'hiddench':
+        {
+          final hidden = [for (final id in app.hiddenCh) if (app.byId[id] != null) app.byId[id]!];
+          return [
+            _SetItem.header(hidden.isEmpty ? 'No hidden channels' : 'OK to show a channel again'),
+            for (final c in hidden) _SetItem('${c.num} · ${app.nameOf(c)}', 'Hidden', (d) => app.toggleHiddenCh(c.id), button: true),
+          ];
+        }
+      case 'locks':
+        return [
+          _SetItem.header('Locked groups need the PIN to watch'),
+          for (final c in app.cats)
+            _SetItem(c.name, app.lockedGroups.contains(c.id) ? '🔒 Locked' : 'Open', (d) => app.toggleLock(c.id), button: true),
+        ];
+    }
+    return [];
   }
 
   List<_SetItem> get _settings {
+    if (setPage != 'main' && setPage != 'groups') return _pageItems();
     if (setPage == 'groups') {
       return [
         _SetItem.header('Show or hide groups  ·  hidden groups also leave All Channels'),
@@ -400,16 +591,35 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           setIdx = 1;
         });
       }, button: true),
+      _choice('Guide shows', 'days', '1', const {'1': '1 day ahead', '2': '2 days ahead', '3': '3 days ahead'}),
       _SetItem('Reload the TV guide', '', (d) {
         app.refreshGuide();
         _toast('TV guide reloading');
       }, button: true),
+      _SetItem.header('Channels'),
+      _SetItem('Hidden channels', '${app.hiddenCh.length} hidden  ›', (d) => setState(() {
+            setPage = 'hiddench';
+            setIdx = 1;
+          }), button: true),
+      _SetItem('Hold OK (or right-click) on any channel to favorite, rename, hide or lock it', '', null, button: true),
       _SetItem.header('Player'),
+      _choice('Buffer ahead', 'ahead', '30',
+          const {'10': '10 seconds (fast switching)', '30': '30 seconds (balanced)', '60': '60 seconds (steadier)', '120': '2 minutes (weak Wi-Fi)'},
+          engine: true),
+      _choice('Reconnect if the stream drops', 'reconnect', 'on', const {'on': 'On (up to 5 tries)', 'off': 'Off'}),
+      _choice('Give up on a slow server after', 'timeout', '20', const {'10': '10 seconds', '20': '20 seconds', '40': '40 seconds'}, engine: true),
       _choice('Stream format', 'fmt', 'auto', const {'auto': 'Automatic', 'ts': 'MPEG-TS (.ts)', 'hls': 'HLS (.m3u8)'}),
       _choice('Full-screen picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
       _choice('Info bar stays for', 'osd', '5', const {'3': '3 seconds', '5': '5 seconds', '8': '8 seconds', '15': '15 seconds'}),
       _choice('Buffer size', 'buf', 'normal', const {'normal': 'Normal', 'large': 'Large', 'xl': 'Extra large'}, note: 'after restart'),
-      _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off'}, note: 'after restart'),
+      _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off (software)'}, note: 'after restart'),
+      _choice('Deinterlace', 'deint', 'no', const {'no': 'Off', 'yes': 'On (older broadcast channels)'}, engine: true),
+      _choice('Preferred audio language', 'alang', 'eng,en',
+          const {'eng,en': 'English', 'spa,es': 'Spanish', 'fre,fra,fr': 'French', 'por,pt': 'Portuguese', '': 'Channel default'},
+          engine: true),
+      _choice('Subtitles', 'subs', 'no', const {'no': 'Off', 'auto': 'On when available'}, engine: true),
+      _choice('Identify as', 'ua', 'tame', const {'tame': 'Tame Player', 'vlc': 'VLC (if a provider blocks unknown apps)'}, engine: true),
+      _SetItem('While watching, press ☰ / M (or hold OK) for audio, subtitles and picture', '', null, button: true),
       _SetItem.header('Subscriptions'),
       for (var i = 0; i < app.accounts.length; i++)
         _SetItem(
@@ -438,6 +648,43 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         player.stop();
         app.removeActive();
       }, button: true),
+      _SetItem.header('Parental control'),
+      _SetItem(app.opt('pin', '').isEmpty ? 'Set a 4-digit PIN' : 'Change the PIN', '', (d) {
+        void go() {
+          setState(() => area = Area.guide);
+          _openInput('setpin');
+        }
+        if (app.opt('pin', '').isEmpty || _unlocked) {
+          go();
+        } else {
+          _askPin(go);
+        }
+      }, button: true),
+      if (app.opt('pin', '').isNotEmpty)
+        _SetItem('Locked groups', '${app.lockedGroups.length} locked  ›', (d) {
+          void go() => setState(() {
+                area = Area.settings;
+                setPage = 'locks';
+                setIdx = 1;
+              });
+          if (_unlocked) {
+            go();
+          } else {
+            _askPin(go);
+          }
+        }, button: true),
+      if (app.opt('pin', '').isNotEmpty)
+        _SetItem('Remove the PIN', '', (d) {
+          void go() {
+            app.setOpt('pin', '');
+            _toast('PIN removed');
+          }
+          if (_unlocked) {
+            go();
+          } else {
+            _askPin(go);
+          }
+        }, button: true),
       _SetItem.header('Favorites'),
       _SetItem('Clear favorites', '${app.favs.length} saved', (d) {
         app.clearFavs();
@@ -476,12 +723,174 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   }
 
   void _openSettings() => setState(() {
+        _panelFrom = Area.guide;
         area = Area.settings;
         setPage = 'main';
         setIdx = 1;
       });
 
+  void _openPanel(String page, {Channel? ch}) => setState(() {
+        _panelFrom = area == Area.full ? Area.full : Area.guide;
+        _optCh = ch;
+        area = Area.settings;
+        setPage = page;
+        setIdx = 1;
+      });
+
+  // ---------------------------------------------------------------- search / rename / PIN
+
+  void _openInput(String mode, {String initial = ''}) {
+    setState(() {
+      if (area != Area.input) _panelFrom = area == Area.full ? Area.full : Area.guide;
+      area = Area.input;
+      _inputMode = mode;
+      _inputCtl.text = initial;
+      _results = [];
+      resIdx = 0;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _inputFocus.requestFocus());
+  }
+
+  void _closeInput() {
+    _inputFocus.unfocus();
+    setState(() => area = _panelFrom == Area.full && playingId != null ? Area.full : Area.guide);
+    _panelFrom = Area.guide;
+    _focus.requestFocus();
+  }
+
+  void _askPin(VoidCallback then) {
+    _afterPin = then;
+    _openInput('pin');
+  }
+
+  KeyEventResult _onInputKey(FocusNode n, KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final k = e.logicalKey;
+    if (k == LogicalKeyboardKey.arrowDown || k == LogicalKeyboardKey.arrowUp) {
+      if (_results.isNotEmpty) {
+        setState(() => resIdx = (resIdx + (k == LogicalKeyboardKey.arrowUp ? -1 : 1) + _results.length) % _results.length);
+        _scrollSettings();
+      }
+      return KeyEventResult.handled;
+    }
+    if (k == LogicalKeyboardKey.escape || k == LogicalKeyboardKey.goBack || k == LogicalKeyboardKey.browserBack) {
+      _closeInput();
+      return KeyEventResult.handled;
+    }
+    if (_isOkKey(k)) {
+      _submitInput();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  void _onInputChanged(String q) {
+    if (_inputMode != 'search') return;
+    final t = q.trim().toLowerCase();
+    final out = <_Result>[];
+    if (t.length >= 2) {
+      for (final c in app.channels) {
+        if (app.hiddenCh.contains(c.id) || app.hiddenGroups.contains(c.catId)) continue;
+        if (app.nameOf(c).toLowerCase().contains(t)) out.add(_Result(c, null, app.nameOf(c), 'Channel ${c.num}'));
+        if (out.length >= 40) break;
+      }
+      final now = DateTime.now();
+      final shows = <_Result>[];
+      app.loadedEpg.forEach((id, progs) {
+        final c = app.byId[id];
+        if (c == null || app.hiddenCh.contains(id)) return;
+        for (final p in progs) {
+          if (p.placeholder || !p.end.isAfter(now)) continue;
+          if (p.title.toLowerCase().contains(t)) {
+            final when = p.isLiveAt(now) ? 'On now' : '${_dayName(p.start)} ${fmt(p.start)}';
+            shows.add(_Result(c, p, p.title, '$when · ${app.nameOf(c)}'));
+          }
+        }
+      });
+      shows.sort((a, b) => a.p!.start.compareTo(b.p!.start));
+      out.addAll(shows.take(60));
+    }
+    setState(() {
+      _results = out;
+      resIdx = 0;
+    });
+  }
+
+  String _dayName(DateTime t) {
+    final n = DateTime.now();
+    if (t.year == n.year && t.month == n.month && t.day == n.day) return 'Today';
+    final tm = n.add(const Duration(days: 1));
+    if (t.year == tm.year && t.month == tm.month && t.day == tm.day) return 'Tomorrow';
+    const d = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return d[t.weekday - 1];
+  }
+
+  void _submitInput() {
+    final text = _inputCtl.text.trim();
+    switch (_inputMode) {
+      case 'search':
+        if (_results.isNotEmpty) _openResult(_results[clampI(resIdx, 0, _results.length - 1)]);
+      case 'rename':
+        {
+          final ch = _optCh;
+          if (ch != null) app.rename(ch.id, text);
+          _closeInput();
+          _toast(text.isEmpty ? 'Original name restored' : 'Renamed');
+        }
+      case 'pin':
+        if (text == app.opt('pin', '')) {
+          _unlocked = true;
+          final then = _afterPin;
+          _afterPin = null;
+          _closeInput();
+          then?.call();
+        } else {
+          _inputCtl.clear();
+          _toast('Wrong PIN');
+        }
+      case 'setpin':
+        if (RegExp(r'^\d{4}$').hasMatch(text)) {
+          app.setOpt('pin', text);
+          _unlocked = true;
+          _closeInput();
+          _toast('★ PIN saved');
+        } else {
+          _toast('The PIN needs 4 numbers');
+        }
+    }
+  }
+
+  void _openResult(_Result r) {
+    _closeInput();
+    // show it in All Channels so it's always in the list
+    _setCategory(0);
+    final i = list.indexWhere((c) => c.id == r.ch.id);
+    final now = DateTime.now();
+    setState(() {
+      if (i >= 0) {
+        row = i;
+        top = i - 2;
+        _fixTop();
+      }
+      final p = r.p;
+      if (p != null && p.start.isAfter(now)) {
+        cursor = p.start;
+        _ensureVis();
+      } else {
+        cursor = now;
+      }
+    });
+    final p = r.p;
+    if (p == null || !p.start.isAfter(now)) _tune(r.ch);
+  }
+
   void _closeSettings() => setState(() {
+        if (_panelFrom == Area.full && playingId != null) {
+          area = Area.full;
+          setPage = 'main';
+          _panelFrom = Area.guide;
+          return;
+        }
         area = Area.guide;
         setPage = 'main';
         // groups may have been hidden: stay on the same group if it still exists
@@ -505,9 +914,32 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   // ---------------------------------------------------------------- input
 
+  bool _isOkKey(LogicalKeyboardKey k) =>
+      k == LogicalKeyboardKey.select ||
+      k == LogicalKeyboardKey.enter ||
+      k == LogicalKeyboardKey.numpadEnter ||
+      k == LogicalKeyboardKey.gameButtonA;
+
   KeyEventResult _onKey(FocusNode node, KeyEvent e) {
-    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
+    if (area == Area.input) return KeyEventResult.ignored; // the text box handles its own keys
     final k = e.logicalKey;
+    // OK: a short press acts on release; holding it opens the options (like TiviMate)
+    if (_isOkKey(k)) {
+      if (e is KeyDownEvent) {
+        _okDown = DateTime.now();
+        _longFired = false;
+      } else if (e is KeyRepeatEvent) {
+        if (!_longFired && _okDown != null && DateTime.now().difference(_okDown!).inMilliseconds > 550) {
+          _longFired = true;
+          _act('long');
+        }
+      } else if (e is KeyUpEvent) {
+        if (!_longFired && _okDown != null) _act('ok');
+        _okDown = null;
+      }
+      return KeyEventResult.handled;
+    }
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
     String? a;
     if (k == LogicalKeyboardKey.arrowUp) {
       a = 'up';
@@ -519,12 +951,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       a = 'right';
     } else if (e is KeyRepeatEvent) {
       return KeyEventResult.handled; // only arrows repeat
-    } else if (k == LogicalKeyboardKey.select ||
-        k == LogicalKeyboardKey.enter ||
-        k == LogicalKeyboardKey.numpadEnter ||
-        k == LogicalKeyboardKey.gameButtonA ||
-        k == LogicalKeyboardKey.space) {
+    } else if (k == LogicalKeyboardKey.space) {
       a = 'ok';
+    } else if (k == LogicalKeyboardKey.keyS || k == LogicalKeyboardKey.slash || k == LogicalKeyboardKey.find) {
+      a = 'search';
+    } else if (k == LogicalKeyboardKey.keyO) {
+      a = 'long';
     } else if (k == LogicalKeyboardKey.escape ||
         k == LogicalKeyboardKey.goBack ||
         k == LogicalKeyboardKey.browserBack ||
@@ -576,6 +1008,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _settingsAct(a);
       case Area.dialog:
         _dialogAct(a);
+      case Area.input:
+        if (a == 'back') _closeInput();
     }
   }
 
@@ -628,10 +1062,15 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         if (ch == null) return;
         if (ch.id == playingId) return _goFull();
         _tune(ch);
-        _toast('▶ ${ch.name}');
+        _toast('▶ ${app.nameOf(ch)}');
         return;
       case 'menu':
         return _openMenu();
+      case 'long':
+        if (ch != null) _openPanel('channel', ch: ch);
+        return;
+      case 'search':
+        return _openInput('search');
       case 'fav':
         _toggleFav(ch);
       case 'pp':
@@ -662,6 +1101,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             _closeMenu();
           } else if (m.kind == 'settings') {
             _openSettings();
+          } else if (m.kind == 'search') {
+            _closeMenu();
+            _openInput('search');
           } else {
             _closeMenu();
             _addAccount();
@@ -702,6 +1144,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _showOsd();
       case 'pp':
         _togglePause();
+      case 'menu':
+      case 'long':
+        _openPanel('player', ch: playing);
       default:
         _showOsd();
     }
@@ -735,7 +1180,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         }
       case 'back':
       case 'menu':
-        if (setPage != 'main') {
+        if (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks') {
           setState(() {
             setPage = 'main';
             setIdx = 1;
@@ -841,6 +1286,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           _menu(),
           if (area == Area.settings) _settingsPanel(),
           if (area == Area.dialog) _dialog(),
+          if (area == Area.input) _inputPanel(),
           if (list.isEmpty && (app.loading || app.error != null)) _loadingPanel(),
           _toastWidget(),
         ]),
@@ -871,7 +1317,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             child: Text('${ch.num}', style: ts(18, w: FontWeight.w700)),
           ),
           const SizedBox(width: 10),
-          Flexible(child: Text(ch.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: const Color(0xFFB8C8D8)))),
+          Flexible(child: Text(app.nameOf(ch), maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: const Color(0xFFB8C8D8)))),
           if (ch.catchup) Text('  ⟲ Catch-up', style: ts(14, c: const Color(0xFF9FD3FF))),
           if (app.favs.contains(ch.id)) Text('  ★', style: ts(18, c: TP.orange)),
           if (ch.id == playingId) Text('  ▶ Playing', style: ts(14, c: TP.orange)),
@@ -1119,6 +1565,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   Widget _chCell(Channel ch, int i, bool isCur) {
     return GestureDetector(
       onTap: () => _tapChannel(i),
+      onSecondaryTap: () => _openPanel('channel', ch: ch),
+      onLongPress: () => _openPanel('channel', ch: ch),
       child: Container(
         decoration: BoxDecoration(
           color: isCur ? TP.chCellCur : TP.chCell,
@@ -1142,7 +1590,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             const SizedBox(width: 10),
           ],
           Expanded(
-            child: Text(ch.name, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: ts(17, w: FontWeight.w600)),
+            child: Text(app.nameOf(ch), maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: ts(17, w: FontWeight.w600)),
           ),
           if (ch.catchup) Text(' ⟲', style: ts(14, c: const Color(0xFF9FD3FF))),
           if (app.favs.contains(ch.id)) Text(' ★', style: ts(15, c: TP.orange)),
@@ -1169,6 +1617,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       height: kRowH,
       child: GestureDetector(
         onTap: () => _tapCell(r, p),
+        onSecondaryTap: () {
+          if (r < list.length) _openPanel('channel', ch: list[r]);
+        },
+        onLongPress: () {
+          if (r < list.length) _openPanel('channel', ch: list[r]);
+        },
         child: AnimatedScale(
           scale: lift ? (fx == 'full' ? 1.06 : 1.03) : 1,
           duration: const Duration(milliseconds: 160),
@@ -1229,7 +1683,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       child: Container(
         color: TP.hintBar,
         padding: const EdgeInsets.symmetric(horizontal: 22),
-        child: const Row(children: [
+        child: const FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
           Kbd('◀', 'Groups'),
           SizedBox(width: 26),
           Kbd('▲▼', 'Channels'),
@@ -1242,14 +1699,20 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           SizedBox(width: 26),
           Kbd('☰', 'Menu (M)'),
           SizedBox(width: 26),
+          Kbd('S', 'Search'),
+          SizedBox(width: 26),
+          Kbd('Hold OK', 'Options'),
+          SizedBox(width: 26),
+          SizedBox(width: 26),
           Kbd('BACK', 'Exit'),
         ]),
+        ),
       ),
     );
   }
 
   Widget _video() {
-    final full = area == Area.full;
+    final full = _isFull;
     final ch = playing;
     final showStripes = ch != null && (!hasVideo || buffering || playError != null);
     return AnimatedPositioned(
@@ -1299,7 +1762,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                     painter: StripesPainter(
                       stripes.value,
                       ch!.hue,
-                      ch.name,
+                      app.nameOf(ch),
                       playError ?? (paused ? 'Paused' : 'Tuning in…'),
                     ),
                   ),
@@ -1347,7 +1810,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           const SizedBox(width: 26),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text('${ch.num} · ${ch.name}${app.favs.contains(ch.id) ? '  ★' : ''}', style: ts(19, c: const Color(0xFFB8C8D8))),
+              Text('${ch.num} · ${app.nameOf(ch)}${app.favs.contains(ch.id) ? '  ★' : ''}', style: ts(19, c: const Color(0xFFB8C8D8))),
               const SizedBox(height: 4),
               Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(34, w: FontWeight.w800)),
               const SizedBox(height: 6),
@@ -1474,7 +1937,17 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 Padding(
                   padding: const EdgeInsets.fromLTRB(30, 0, 30, 10),
-                  child: Text(setPage == 'groups' ? 'Settings › Groups' : 'Settings', style: ts(26, w: FontWeight.w800)),
+                  child: Text(
+                    const {
+                          'groups': 'Settings › Groups',
+                          'hiddench': 'Settings › Hidden channels',
+                          'locks': 'Settings › Locked groups',
+                          'channel': 'Channel options',
+                          'player': 'Player options',
+                        }[setPage] ??
+                        'Settings',
+                    style: ts(26, w: FontWeight.w800),
+                  ),
                 ),
                 Expanded(
                   child: SingleChildScrollView(
@@ -1513,12 +1986,136 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                 Padding(
                   padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
                   child: Text(
-                    setPage == 'groups' ? 'OK to show / hide · BACK to go back' : '▲▼ move · ◀ ▶ or OK to change · BACK to close',
+                    (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks')
+                        ? 'OK to change · BACK to go back'
+                        : '▲▼ move · ◀ ▶ or OK to change · BACK to close',
                     style: ts(14, c: const Color(0xFFA5B6C8)),
                   ),
                 ),
               ]),
             ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _inputPanel() {
+    const titles = {
+      'search': 'Search',
+      'rename': 'Rename channel',
+      'pin': 'Enter your PIN',
+      'setpin': 'Choose a 4-digit PIN',
+    };
+    final isPin = _inputMode == 'pin' || _inputMode == 'setpin';
+    final hint = const {
+          'search': 'Channel or show name',
+          'rename': 'New name (leave empty to restore)',
+        }[_inputMode] ??
+        '••••';
+    return Positioned.fill(
+      child: Stack(children: [
+        Positioned.fill(child: GestureDetector(onTap: _closeInput, child: Container(color: const Color(0x330A1626)))),
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 600,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(0, 26, 0, 14),
+            decoration: const BoxDecoration(
+              color: Color(0xFF1F3A5D),
+              border: Border(left: BorderSide(color: Color(0x29C9D2DC))),
+              boxShadow: [BoxShadow(color: Color(0xB3000000), blurRadius: 50, offset: Offset(-14, 0))],
+            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(30, 0, 30, 14),
+                child: Text(titles[_inputMode] ?? '', style: ts(26, w: FontWeight.w800)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 30),
+                child: TextField(
+                  controller: _inputCtl,
+                  focusNode: _inputFocus,
+                  autofocus: true,
+                  obscureText: isPin,
+                  maxLength: isPin ? 4 : null,
+                  keyboardType: isPin ? TextInputType.number : TextInputType.text,
+                  textInputAction: TextInputAction.done,
+                  style: ts(20),
+                  cursorColor: TP.orange,
+                  onChanged: _onInputChanged,
+                  onSubmitted: (_) => _submitInput(),
+                  decoration: InputDecoration(
+                    hintText: hint,
+                    hintStyle: ts(18, c: const Color(0xFF8FA3B8)),
+                    counterText: '',
+                    prefixIcon: _inputMode == 'search' ? const Icon(Icons.search, color: TP.dim) : null,
+                    filled: true,
+                    fillColor: const Color(0xFF20395A),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Color(0xFF3A5C85), width: 2),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: TP.orange, width: 2),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              Expanded(
+                child: _inputMode != 'search'
+                    ? const SizedBox.shrink()
+                    : (_results.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
+                            child: Text(
+                              _inputCtl.text.trim().length < 2
+                                  ? 'Type at least 2 letters. Searches channel names and the shows in the guide.'
+                                  : 'Nothing found.',
+                              style: ts(16, c: TP.dim2, h: 1.4),
+                            ),
+                          )
+                        : SingleChildScrollView(
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                              for (var i = 0; i < _results.length; i++)
+                                LiftItem(
+                                  key: i == resIdx ? _setFocusKey : null,
+                                  focused: i == resIdx,
+                                  fx: app.fx,
+                                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
+                                  onTap: () => _openResult(_results[i]),
+                                  child: Row(children: [
+                                    ChannelBadge(ch: _results[i].ch, w: 48, h: 32, fontSize: 12),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                        Text(_results[i].title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: ts(18, w: FontWeight.w600, c: i == resIdx ? const Color(0xFF050B14) : TP.text)),
+                                        Text(_results[i].sub,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: ts(14, c: i == resIdx ? const Color(0xFF1B2B3D) : TP.dim2)),
+                                      ]),
+                                    ),
+                                  ]),
+                                ),
+                            ]),
+                          )),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
+                child: Text(
+                  _inputMode == 'search' ? 'Type to search · ▲▼ pick · OK to go · BACK to close' : 'OK to save · BACK to cancel',
+                  style: ts(14, c: const Color(0xFFA5B6C8)),
+                ),
+              ),
+            ]),
           ),
         ),
       ]),
@@ -1622,7 +2219,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   Widget _toastWidget() {
     final m = toast;
-    final full = area == Area.full;
+    final full = _isFull;
     Widget card = const SizedBox.shrink();
     if (m != null) {
       final match = RegExp(r'^(●|▶|★|❚❚)\s*').firstMatch(m);
