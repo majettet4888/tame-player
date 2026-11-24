@@ -577,7 +577,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
               }
               setState(() {});
             }),
-            _choice('Picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
+            _choice('Picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Zoom', 'stretch': 'Stretch'}),
             if (ch != null)
               _SetItem(app.favs.contains(ch.id) ? 'Remove from Favorites' : 'Add to Favorites', '', (d) => _toggleFav(ch), button: true),
             if (ch != null)
@@ -644,7 +644,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final exp = info?.expires;
     return [
       _SetItem.header('General'),
-      _choice('When the app opens', 'start', 'last', const {'last': 'Play the last channel', 'guide': 'Show the guide only'}),
+      _choice('When the app opens', 'start', 'last', const {'last': 'Last channel', 'guide': 'Guide only'}),
       _SetItem('Intro sound', const {'streaming': 'Streaming', 'off': 'Off'}[app.opt('introsound', 'cinematic')] ?? 'Cinematic', (d) {
         _cycle('introsound', 'cinematic', const ['cinematic', 'streaming', 'off'], d);
         final w = app.opt('introsound', 'cinematic');
@@ -659,7 +659,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),
       _choice('Channel numbers', 'nums', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
       _choice('Channel logos', 'logos', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
-      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill the box', 'fit': 'Fit (bars)'}),
+      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill', 'fit': 'Fit'}),
       _SetItem.header('TV guide'),
       _SetItem('Guide time shift', sh == 0 ? 'None' : '${sh > 0 ? '+' : ''}$sh h', (d) {
         final n = clampI(sh + (d < 0 ? -1 : 1), -12, 12);
@@ -671,7 +671,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           setIdx = 1;
         });
       }, button: true),
-      _choice('Guide shows', 'days', '1', const {'1': '1 day ahead', '2': '2 days ahead', '3': '3 days ahead'}),
+      _choice('Guide shows', 'days', '1', const {'1': '1 day', '2': '2 days', '3': '3 days'}),
       _SetItem('Reload the TV guide', '', (d) {
         app.refreshGuide();
         _toast('TV guide reloading');
@@ -681,31 +681,31 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             setPage = 'hiddench';
             setIdx = 1;
           }), button: true),
-      _SetItem('Hold OK (or right-click) on any channel to favorite, rename, hide or lock it', '', null, button: true),
+      _SetItem.note('Tip: hold OK (or right-click) on a channel to favorite, rename, hide or lock it.'),
       _SetItem.header('Player'),
       _choice('Buffer ahead', 'ahead', '30',
-          const {'10': '10 seconds (fast switching)', '30': '30 seconds (balanced)', '60': '60 seconds (steadier)', '120': '2 minutes (weak Wi-Fi)'},
+          const {'10': '10 sec', '30': '30 sec', '60': '60 sec', '120': '2 min'},
           engine: true),
-      _choice('Reconnect if the stream drops', 'reconnect', 'on', const {'on': 'On (up to 5 tries)', 'off': 'Off'}),
-      _choice('Give up on a slow server after', 'timeout', '20', const {'10': '10 seconds', '20': '20 seconds', '40': '40 seconds'}, engine: true),
-      _choice('Stream format', 'fmt', 'auto', const {'auto': 'Automatic', 'ts': 'MPEG-TS (.ts)', 'hls': 'HLS (.m3u8)'}),
+      _choice('Auto-reconnect', 'reconnect', 'on', const {'on': 'On', 'off': 'Off'}),
+      _choice('Slow-server timeout', 'timeout', '20', const {'10': '10 sec', '20': '20 sec', '40': '40 sec'}, engine: true),
+      _choice('Stream format', 'fmt', 'auto', const {'auto': 'Auto', 'ts': 'TS', 'hls': 'HLS'}),
       _choice('Full-screen picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
-      _choice('Info bar stays for', 'osd', '5', const {'3': '3 seconds', '5': '5 seconds', '8': '8 seconds', '15': '15 seconds'}),
-      _choice('Buffer size', 'buf', 'normal', const {'normal': 'Normal', 'large': 'Large', 'xl': 'Extra large'}, note: 'after restart'),
-      _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off (software)'}, note: 'after restart'),
-      _choice('Deinterlace', 'deint', 'no', const {'no': 'Off', 'yes': 'On (older broadcast channels)'}, engine: true),
-      _choice('Preferred audio language', 'alang', 'eng,en',
-          const {'eng,en': 'English', 'spa,es': 'Spanish', 'fre,fra,fr': 'French', 'por,pt': 'Portuguese', '': 'Channel default'},
+      _choice('Info bar stays for', 'osd', '5', const {'3': '3 sec', '5': '5 sec', '8': '8 sec', '15': '15 sec'}),
+      _choice('Buffer size', 'buf', 'normal', const {'normal': 'Normal', 'large': 'Large', 'xl': 'Extra large'}, note: 'restart'),
+      _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off'}, note: 'after restart'),
+      _choice('Deinterlace', 'deint', 'no', const {'no': 'Off', 'yes': 'On'}, engine: true),
+      _choice('Audio language', 'alang', 'eng,en',
+          const {'eng,en': 'English', 'spa,es': 'Spanish', 'fre,fra,fr': 'French', 'por,pt': 'Portuguese', '': 'Default'},
           engine: true),
-      _choice('Subtitles', 'subs', 'no', const {'no': 'Off', 'auto': 'On when available'}, engine: true),
-      _choice('Identify as', 'ua', 'tame', const {'tame': 'Tame Player', 'vlc': 'VLC (if a provider blocks unknown apps)'}, engine: true),
-      _SetItem('While watching, press ☰ / M (or hold OK) for audio, subtitles and picture', '', null, button: true),
+      _choice('Subtitles', 'subs', 'no', const {'no': 'Off', 'auto': 'On'}, engine: true),
+      _choice('Identify as', 'ua', 'tame', const {'tame': 'Tame Player', 'vlc': 'VLC'}, engine: true),
+      _SetItem.note('Tip: while watching, press ☰ / M (or hold OK) for audio, subtitles and picture.'),
       _SetItem.header('Subscriptions'),
       for (var i = 0; i < app.accounts.length; i++)
         _SetItem(
           i == app.active ? '● ${app.accounts[i].name}' : app.accounts[i].name,
           i == app.active
-              ? (info != null && info.maxConnections > 0 ? '${info.activeConnections} of ${info.maxConnections} screens in use' : 'Watching now')
+              ? (info != null && info.maxConnections > 0 ? '${info.activeConnections}/${info.maxConnections} screens' : 'Active')
               : 'Switch to this',
           (d) {
             if (i != app.active) {
@@ -767,7 +767,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         }, button: true),
       _SetItem.header('Reminders'),
       _choice('Remind me', 'remindlead', '1',
-          const {'1': 'When the show starts', '2': '2 minutes before', '5': '5 minutes before', '10': '10 minutes before'}),
+          const {'1': 'At start', '2': '2 min early', '5': '5 min early', '10': '10 min early'}),
       _SetItem('Upcoming reminders', '${app.reminders.length}  ›', (d) => setState(() {
             setPage = 'reminders';
             setIdx = 1;
@@ -1331,12 +1331,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       left: 0,
       top: 0,
       bottom: 0,
-      width: 600,
+      width: 520,
       child: TweenAnimationBuilder<double>(
         tween: Tween(begin: 1, end: 0),
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOutCubic,
-        builder: (context, v, child) => Transform.translate(offset: Offset(-600 * v, 0), child: child),
+        builder: (context, v, child) => Transform.translate(offset: Offset(-520 * v, 0), child: child),
         child: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(colors: [Color(0xF2152B47), Color(0xE61D3758), Color(0x001D3758)], stops: [0, 0.82, 1]),
@@ -1383,7 +1383,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                           Text(p.title,
                               maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(14, c: f ? const Color(0xFF1B2B3D) : TP.dim2)),
                           const SizedBox(height: 4),
-                          progressBar(220, progress(p, now)),
+                          progressBar(180, progress(p, now)),
                         ]),
                       ),
                       if (app.favs.contains(ch.id)) const FavHeart(on: true, size: 16),
@@ -2206,12 +2206,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           right: 0,
           top: 0,
           bottom: 0,
-          width: 600,
+          width: 460,
           child: TweenAnimationBuilder<double>(
             tween: Tween(begin: 1, end: 0),
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
-            builder: (context, v, child) => Transform.translate(offset: Offset(600 * v, 0), child: child),
+            builder: (context, v, child) => Transform.translate(offset: Offset(460 * v, 0), child: child),
             child: Container(
               padding: const EdgeInsets.only(top: 26, bottom: 14),
               decoration: const BoxDecoration(
@@ -2263,12 +2263,20 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                             },
                             child: Row(children: [
                               Expanded(
+                                flex: 3,
                                 child: Text(items[i].label,
-                                    maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: i == idx ? const Color(0xFF050B14) : TP.text)),
+                                    maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(17, c: i == idx ? const Color(0xFF050B14) : TP.text)),
                               ),
-                              Text(
-                                items[i].button || items[i].value.isEmpty ? items[i].value : '‹  ${items[i].value}  ›',
-                                style: ts(16, w: i == idx ? FontWeight.w600 : FontWeight.w400, c: i == idx ? const Color(0xFF1B2B3D) : const Color(0xFFB8C8D8)),
+                              const SizedBox(width: 10),
+                              Flexible(
+                                flex: 2,
+                                child: Text(
+                                  items[i].button || items[i].value.isEmpty ? items[i].value : '‹ ${items[i].value} ›',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.right,
+                                  style: ts(15, w: i == idx ? FontWeight.w600 : FontWeight.w400, c: i == idx ? const Color(0xFF1B2B3D) : const Color(0xFFB8C8D8)),
+                                ),
                               ),
                             ]),
                           ),
@@ -2312,7 +2320,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           right: 0,
           top: 0,
           bottom: 0,
-          width: 600,
+          width: 480,
           child: Container(
             padding: const EdgeInsets.fromLTRB(0, 26, 0, 14),
             decoration: const BoxDecoration(
