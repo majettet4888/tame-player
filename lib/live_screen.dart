@@ -642,7 +642,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
               }
               setState(() {});
             }),
-            _choice('Picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Zoom', 'stretch': 'Stretch'}),
+            _choice('Picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Zoom', 'movie': 'Movie zoom', 'stretch': 'Stretch'}),
             if (ch != null)
               _SetItem(app.favs.contains(ch.id) ? 'Remove from Favorites' : 'Add to Favorites', '', (d) => _toggleFav(ch), button: true),
             if (ch != null)
@@ -724,7 +724,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),
       _choice('Channel numbers', 'nums', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
       _choice('Channel logos', 'logos', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
-      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill', 'zoom': 'Zoom', 'fit': 'Fit'}),
+      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill', 'zoom': 'Movie zoom (no bars)', 'fit': 'Fit'}),
       _SetItem.header('TV guide'),
       _SetItem('Guide time shift', sh == 0 ? 'None' : '${sh > 0 ? '+' : ''}$sh h', (d) {
         final n = clampI(sh + (d < 0 ? -1 : 1), -12, 12);
@@ -755,7 +755,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _choice('Auto-reconnect', 'reconnect', 'on', const {'on': 'On', 'off': 'Off'}),
       _choice('Slow-server timeout', 'timeout', '20', const {'10': '10 sec', '20': '20 sec', '40': '40 sec'}, engine: true),
       _choice('Stream format', 'fmt', 'auto', const {'auto': 'Auto', 'ts': 'TS', 'hls': 'HLS'}),
-      _choice('Full-screen picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
+      _choice('Full-screen picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'movie': 'Movie zoom (no bars)', 'stretch': 'Stretch'}),
       _choice('Info bar stays for', 'osd', '5', const {'3': '3 sec', '5': '5 sec', '8': '8 sec', '15': '15 sec'}),
       _choice('Buffer size', 'buf', 'normal', const {'normal': 'Normal', 'large': 'Large', 'xl': 'Extra large'}, note: 'restart'),
       _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off'}, note: 'after restart'),
@@ -2256,13 +2256,13 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             child: Stack(fit: StackFit.expand, children: [
               Transform.scale(
                 // "Zoom" hides black bars that are built into widescreen movies
-                scale: !full && app.opt('pvfit', 'fill') == 'zoom' ? 1.34 : 1,
+                scale: (full ? app.opt('fsfit', 'fit') == 'movie' : app.opt('pvfit', 'fill') == 'zoom') ? 1.34 : 1,
                 child: Video(
                   controller: vc,
                   controls: NoVideoControls,
                   fill: Colors.black,
                   fit: full
-                      ? const {'fill': BoxFit.cover, 'stretch': BoxFit.fill}[app.opt('fsfit', 'fit')] ?? BoxFit.contain
+                      ? const {'fill': BoxFit.cover, 'movie': BoxFit.cover, 'stretch': BoxFit.fill}[app.opt('fsfit', 'fit')] ?? BoxFit.contain
                       : (app.opt('pvfit', 'fill') == 'fit' ? BoxFit.contain : BoxFit.cover),
                 ),
               ),
