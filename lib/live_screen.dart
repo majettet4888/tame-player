@@ -9,6 +9,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'login_screen.dart';
+import 'main.dart' show introDone;
 import 'state.dart';
 import 'theme.dart';
 import 'updater.dart';
@@ -190,7 +191,19 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           if (c.id == app.lastChannelId) last = c;
         }
         last ??= app.channels.first;
-        if (app.opt('start', 'last') == 'last') _tune(last);
+        if (app.opt('start', 'last') == 'last') {
+          final ch = last;
+          if (introDone.value) {
+            _tune(ch);
+          } else {
+            // wait until the intro has finished before the channel (and its sound) starts
+            void go() {
+              introDone.removeListener(go);
+              if (mounted && playingId == null) _tune(ch);
+            }
+            introDone.addListener(go);
+          }
+        }
         final i = list.indexOf(last);
         if (i >= 0) {
           row = i;
