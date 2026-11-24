@@ -1449,22 +1449,27 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final items = _settings;
     final idx = clampI(setIdx, 0, items.isEmpty ? 0 : items.length - 1);
     return Positioned.fill(
-      child: GestureDetector(
-        onTap: _closeSettings,
-        child: Container(
-          color: const Color(0x8C0A1626),
-          alignment: Alignment.center,
-          child: GestureDetector(
-            onTap: () {},
+      child: Stack(children: [
+        // tap the uncovered part of the screen to close
+        Positioned.fill(
+          child: GestureDetector(onTap: _closeSettings, child: Container(color: const Color(0x330A1626))),
+        ),
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: 600,
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 1, end: 0),
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            builder: (context, v, child) => Transform.translate(offset: Offset(600 * v, 0), child: child),
             child: Container(
-              width: 760,
-              height: 640,
-              padding: const EdgeInsets.only(top: 24, bottom: 14),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1F3A5D),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0x29C9D2DC)),
-                boxShadow: const [BoxShadow(color: Color(0xB3000000), blurRadius: 80, offset: Offset(0, 30))],
+              padding: const EdgeInsets.only(top: 26, bottom: 14),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1F3A5D),
+                border: Border(left: BorderSide(color: Color(0x29C9D2DC))),
+                boxShadow: [BoxShadow(color: Color(0xB3000000), blurRadius: 50, offset: Offset(-14, 0))],
               ),
               child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 Padding(
@@ -1516,7 +1521,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             ),
           ),
         ),
-      ),
+      ]),
     );
   }
 
