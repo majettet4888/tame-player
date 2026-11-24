@@ -494,9 +494,13 @@ class _VodScreenState extends State<VodScreen> {
         left: 28,
         top: 22,
         child: Row(children: [
-          Icon(series ? Icons.video_library_rounded : Icons.movie_creation_rounded, color: TP.orange, size: 34),
+          GradientText(Icon(series ? Icons.video_library_rounded : Icons.movie_creation_rounded, color: Colors.white, size: 36), goldOrange),
           const SizedBox(width: 12),
-          Text(series ? 'TV Shows' : 'Movies', style: ts(32, w: FontWeight.w800)),
+          GradientText(
+            Text(series ? 'TV SHOWS' : 'MOVIES',
+                style: const TextStyle(fontFamily: 'BebasNeue', fontSize: 50, letterSpacing: 3, color: Colors.white, height: 1)),
+            goldOrange,
+          ),
           const SizedBox(width: 18),
           if (cats.isNotEmpty)
             Text('${cats[_cl(catIdx, 0, cats.length - 1)].name}  ·  ${loadingItems ? '…' : '${items.length}'}',

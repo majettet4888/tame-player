@@ -497,6 +497,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _MenuItem('search', 'Search', icon: Icons.search_rounded),
       _MenuItem('settings', 'Settings', icon: Icons.settings_rounded),
       _MenuItem('add', 'Add a subscription', icon: Icons.add_circle_outline_rounded),
+      _MenuItem('exit', 'Exit Tame Player', icon: Icons.power_settings_new_rounded),
     ];
   }
 
@@ -708,7 +709,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           setIdx = 1;
         });
       }, button: true),
-      _choice('Guide shows', 'days', '1', const {'1': '1 day', '2': '2 days', '3': '3 days'}),
+      _choice('Guide shows', 'days', '2', const {'1': '1 day', '2': '2 days', '3': '3 days', '5': '5 days', '7': '7 days'}),
       _SetItem('Reload the TV guide', '', (d) {
         app.refreshGuide();
         _toast('TV guide reloading');
@@ -1152,12 +1153,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _backOrExit() {
     final now = DateTime.now();
-    if (now.difference(_backAt).inMilliseconds < 2000) {
-      _showDialog('Exit Tame Player?', 'Playback will stop.', 'Stay', 'Exit', _quit);
-    } else {
-      _backAt = now;
-      _toast('Press back again to exit');
+    if (win.isAfter(floor30(now)) || cursor.isAfter(now.add(const Duration(minutes: 1)))) {
+      // looking ahead in the guide: Back first brings you to what's on now
+      setState(() {
+        cursor = now;
+        win = floor30(now);
+      });
+      return;
     }
+    _backAt = now;
+    _showDialog('Exit Tame Player?', 'Playback will stop.', 'Stay', 'Exit', _quit);
   }
 
   void _guideAct(String a) {
@@ -1253,6 +1258,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           } else if (m.kind == 'search') {
             _closeMenu();
             _openInput('search');
+          } else if (m.kind == 'exit') {
+            _closeMenu();
+            _showDialog('Exit Tame Player?', 'Playback will stop.', 'Stay', 'Exit', _quit);
           } else if (m.kind == 'movies' || m.kind == 'series') {
             _closeMenu();
             _openVod(m.kind == 'series');
@@ -1697,7 +1705,19 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         Image.asset('assets/logo.png', width: 64),
         const SizedBox(height: 4),
         Text(fmt(n), style: ts(24, w: FontWeight.w700)),
-        Text('${days[n.weekday - 1]}, ${months[n.month - 1]} ${n.day}', style: ts(13, c: TP.dim2)),
+        Builder(builder: (context) {
+          // the date follows the part of the guide you're looking at
+          final v = cursor.isAfter(n) ? cursor : n;
+          final other = v.year != n.year || v.month != n.month || v.day != n.day;
+          final label = '${days[v.weekday - 1]}, ${months[v.month - 1]} ${v.day}';
+          if (!other) return Text(label, style: ts(14, c: TP.dim2));
+          return Container(
+            margin: const EdgeInsets.only(top: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(color: TP.orange, borderRadius: BorderRadius.circular(12)),
+            child: Text(label, style: ts(14, w: FontWeight.w800, c: const Color(0xFF111111))),
+          );
+        }),
       ]),
     );
   }
@@ -1796,7 +1816,15 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                       padding: const EdgeInsets.only(left: 10),
                       alignment: Alignment.centerLeft,
                       decoration: const BoxDecoration(border: Border(left: BorderSide(color: Color(0x40C9D2DC)))),
-                      child: Text(fmt(win.add(Duration(minutes: 30 * i))), style: ts(15, c: const Color(0xFFB8C8D8))),
+                      child: Builder(builder: (context) {
+                        final t = win.add(Duration(minutes: 30 * i));
+                        final n = DateTime.now();
+                        final otherDay = t.day != n.day || t.month != n.month;
+                        const wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                        final showDay = otherDay && (i == 0 || (t.hour == 0 && t.minute == 0));
+                        return Text(showDay ? '${wd[t.weekday - 1]} ${fmt(t)}' : fmt(t),
+                            style: ts(15, w: showDay ? FontWeight.w800 : FontWeight.w400, c: showDay ? TP.orangeLight : const Color(0xFFB8C8D8)));
+                      }),
                     ),
                   ),
               ]),

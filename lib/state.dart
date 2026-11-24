@@ -89,7 +89,7 @@ class AppState extends ChangeNotifier {
   void resetRange() {
     final n = floor30(DateTime.now());
     rangeStart = n.subtract(const Duration(hours: 4));
-    final days = int.tryParse(_prefs.getString('opt_days') ?? '1') ?? 1;
+    final days = int.tryParse(_prefs.getString('opt_days') ?? '2') ?? 2;
     rangeEnd = n.add(Duration(hours: 24 * days));
     _epg.clear();
     _placeholders.clear();

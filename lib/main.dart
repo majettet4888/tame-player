@@ -184,10 +184,7 @@ class _IntroGateState extends State<IntroGate> with TickerProviderStateMixin {
                               opacity: nameIn * (1 - _c01(grow * 2.5)),
                               child: Transform.translate(
                                 offset: Offset(0, 12 * (1 - nameIn)),
-                                child: Text.rich(TextSpan(children: [
-                                  TextSpan(text: 'Tame ', style: ts(44, w: FontWeight.w800)),
-                                  TextSpan(text: 'Player', style: ts(44, w: FontWeight.w800, c: TP.orange)),
-                                ])),
+                                child: const BrandName(size: 44),
                               ),
                             ),
                           ]),

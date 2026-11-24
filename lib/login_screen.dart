@@ -163,10 +163,7 @@ class _LoginScreenState extends State<LoginScreen> {
     final brand = Column(mainAxisSize: MainAxisSize.min, children: [
       Image.asset('assets/logo.png', width: 170),
       const SizedBox(height: 8),
-      Text.rich(TextSpan(children: [
-        TextSpan(text: 'Tame ', style: ts(40, w: FontWeight.w800)),
-        TextSpan(text: 'Player', style: ts(40, w: FontWeight.w800, c: TP.orange)),
-      ])),
+      const BrandName(size: 40),
       const SizedBox(height: 4),
       Text('Live TV · Full TV Guide · Xtream Codes', style: ts(15, c: TP.dim2)),
     ]);
