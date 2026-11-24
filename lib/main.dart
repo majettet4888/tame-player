@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -33,6 +35,7 @@ class TameApp extends StatelessWidget {
         scaffoldBackgroundColor: TP.bgBot,
       ),
       home: IntroGate(
+        app: app,
         child: ListenableBuilder(
         listenable: app,
         builder: (context, _) {
@@ -53,31 +56,45 @@ class TameApp extends StatelessWidget {
 
 double _c01(double v) => v < 0 ? 0 : (v > 1 ? 1 : v);
 
-/// The opening: the logo pops in, the name fades in, then the logo grows and fades away.
+/// The opening: soft orange and blue lights drift behind the logo, the logo pops in,
+/// the name fades in, it waits until the channels are ready, then the logo grows and fades away.
 class IntroGate extends StatefulWidget {
   final Widget child;
-  const IntroGate({super.key, required this.child});
+  final AppState app;
+  const IntroGate({super.key, required this.child, required this.app});
 
   @override
   State<IntroGate> createState() => _IntroGateState();
 }
 
-class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMixin {
+class _IntroGateState extends State<IntroGate> with TickerProviderStateMixin {
+  // 0 → 0.7 : lights, logo pop, name (about 3.5 s)   ·   0.7 → 1 : logo grows and fades (about 1.5 s)
   late final AnimationController c;
+  late final AnimationController lights;
   bool done = false;
+  Player? _sound;
 
   @override
   void initState() {
     super.initState();
-    c = AnimationController(vsync: this, duration: const Duration(milliseconds: 2400));
-    c.addStatusListener((s) {
-      if (s == AnimationStatus.completed && mounted) setState(() => done = true);
-    });
-    c.forward();
+    c = AnimationController(vsync: this, duration: const Duration(milliseconds: 5000));
+    lights = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat();
+    _run();
     _playSound();
   }
 
-  Player? _sound;
+  Future<void> _run() async {
+    await c.animateTo(0.7);
+    // hold on the logo until the channels have loaded (up to 12 more seconds)
+    final until = DateTime.now().add(const Duration(seconds: 12));
+    while (mounted && (!widget.app.ready || widget.app.loading) && DateTime.now().isBefore(until)) {
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+    if (!mounted) return;
+    await c.animateTo(1);
+    if (mounted) setState(() => done = true);
+    lights.stop();
+  }
 
   Future<void> _playSound() async {
     try {
@@ -89,7 +106,7 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
       _sound = p;
       await p.setVolume(80);
       await p.open(Media('asset:///assets/intro_$which.wav'));
-      Future.delayed(const Duration(seconds: 4), () {
+      Future.delayed(const Duration(seconds: 6), () {
         p.dispose();
         if (identical(_sound, p)) _sound = null;
       });
@@ -99,8 +116,26 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
   @override
   void dispose() {
     c.dispose();
+    lights.dispose();
     super.dispose();
   }
+
+  Widget _glow(Color color, double size, Offset at, double strength) => Positioned(
+        left: at.dx - size / 2,
+        top: at.dy - size / 2,
+        width: size,
+        height: size,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(colors: [
+              color.withAlpha((strength * 150).round()),
+              color.withAlpha((strength * 55).round()),
+              color.withAlpha(0),
+            ], stops: const [0, 0.45, 1]),
+          ),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -109,34 +144,50 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
       if (!done)
         Positioned.fill(
           child: AnimatedBuilder(
-            animation: c,
+            animation: Listenable.merge([c, lights]),
             builder: (context, _) {
               final t = c.value;
-              final pop = Curves.easeOutBack.transform(_c01(t / 0.5));
-              final out = Curves.easeIn.transform(_c01((t - 0.72) / 0.28));
-              final scale = 0.35 + 0.65 * pop + 1.6 * out;
-              final nameOpacity = _c01((t - 0.3) / 0.2) * (1 - _c01(out * 3));
+              final l = lights.value * 2 * math.pi;
+              final inT = _c01(t / 0.12); // lights fade in
+              final pop = Curves.easeOutBack.transform(_c01((t - 0.06) / 0.2));
+              final nameIn = _c01((t - 0.28) / 0.1);
+              final out = Curves.easeIn.transform(_c01((t - 0.7) / 0.3));
+              final scale = (0.35 + 0.65 * pop) * (1 + 0.04 * math.sin(l * 2) * (1 - out)) + 1.6 * out;
               return IgnorePointer(
                 child: Opacity(
                   opacity: 1 - out,
-                  child: Container(
-                    decoration: TP.background,
-                    alignment: Alignment.center,
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                      Transform.scale(
-                        scale: scale,
-                        child: Image.asset('assets/logo.png', width: 200),
-                      ),
-                      const SizedBox(height: 26),
-                      Opacity(
-                        opacity: nameOpacity,
-                        child: Text.rich(TextSpan(children: [
-                          TextSpan(text: 'Tame ', style: ts(42, w: FontWeight.w800)),
-                          TextSpan(text: 'Player', style: ts(42, w: FontWeight.w800, c: TP.orange)),
-                        ])),
-                      ),
-                    ]),
-                  ),
+                  child: LayoutBuilder(builder: (context, box) {
+                    final cx = box.maxWidth / 2, cy = box.maxHeight / 2 - 30;
+                    final r = math.min(box.maxWidth, box.maxHeight);
+                    final strength = inT * (0.75 + 0.25 * math.sin(l * 3));
+                    return Container(
+                      color: TP.bgBot,
+                      child: Stack(children: [
+                        Positioned.fill(child: Container(decoration: TP.background)),
+                        // subtle drifting lights behind the logo
+                        _glow(TP.orange, r * 0.85, Offset(cx + r * 0.16 * math.cos(l), cy + r * 0.08 * math.sin(l)), strength * 0.9),
+                        _glow(const Color(0xFF3A8DFF), r * 0.95, Offset(cx - r * 0.18 * math.cos(l + 1), cy - r * 0.09 * math.sin(l + 1)),
+                            strength),
+                        _glow(const Color(0xFFFFB347), r * 0.35, Offset(cx + r * 0.05 * math.sin(l * 2), cy), strength * 0.6),
+                        Center(
+                          child: Column(mainAxisSize: MainAxisSize.min, children: [
+                            Transform.scale(scale: scale, child: Image.asset('assets/logo.png', width: 210)),
+                            const SizedBox(height: 28),
+                            Opacity(
+                              opacity: nameIn * (1 - _c01(out * 3)),
+                              child: Transform.translate(
+                                offset: Offset(0, 12 * (1 - nameIn)),
+                                child: Text.rich(TextSpan(children: [
+                                  TextSpan(text: 'Tame ', style: ts(44, w: FontWeight.w800)),
+                                  TextSpan(text: 'Player', style: ts(44, w: FontWeight.w800, c: TP.orange)),
+                                ])),
+                              ),
+                            ),
+                          ]),
+                        ),
+                      ]),
+                    );
+                  }),
                 ),
               );
             },
