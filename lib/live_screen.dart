@@ -437,7 +437,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     if (u == null || _updProg != null) return;
     setState(() => _updProg = 0);
     installWindowsUpdate(u, (p) {
-      if (mounted) setState(() => _updProg = p);
+      if (!mounted) return;
+      setState(() => _updProg = p);
+      if (p >= 1) _toast('Installing the update. Tame Player will reopen in a few seconds');
     }).catchError((Object e) {
       if (!mounted) return;
       setState(() => _updProg = null);
@@ -786,7 +788,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _SetItem(
           canInstallUpdates ? 'Install the update (build ${_upd!.build})' : 'Update available (build ${_upd!.build})',
           _updProg != null
-              ? 'Downloading ${(100 * _updProg!).round()}%'
+              ? (_updProg! >= 1 ? 'Installing… reopening' : 'Downloading ${(100 * _updProg!).round()}%')
               : (canInstallUpdates ? 'The app restarts by itself' : 'Install the new TamePlayer.apk'),
           canInstallUpdates ? (d) => _startUpdate() : null,
           button: true,

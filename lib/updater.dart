@@ -63,16 +63,23 @@ Future<void> installWindowsUpdate(UpdateInfo u, void Function(double progress) o
   final exe = Platform.resolvedExecutable;
   final appDir = File(exe).parent.path;
   final unzipTo = '${tmp.path}\\new';
-  final ps = "Expand-Archive -LiteralPath '${zip.path}' -DestinationPath '$unzipTo' -Force; "
-      "Copy-Item -Path '$unzipTo\\*' -Destination '$appDir' -Recurse -Force";
-  final script = File('${tmp.path}\\update.cmd');
+  String q(String v) => "'${v.replaceAll("'", "''")}'"; // PowerShell single-quoted string
+  final script = File('${tmp.path}\\update.ps1');
   await script.writeAsString([
-    '@echo off',
-    'timeout /t 2 /nobreak >nul',
-    'powershell -NoProfile -ExecutionPolicy Bypass -Command "$ps"',
-    'start "" "$exe"',
+    r"$ProgressPreference = 'SilentlyContinue'",
+    'Wait-Process -Id $pid -Timeout 20 -ErrorAction SilentlyContinue',
+    'Start-Sleep -Milliseconds 500',
+    'Expand-Archive -LiteralPath ${q(zip.path)} -DestinationPath ${q(unzipTo)} -Force',
+    "Copy-Item -Path ${q('$unzipTo\\*')} -Destination ${q(appDir)} -Recurse -Force",
+    'Start-Process -FilePath ${q(exe)}',
     '',
   ].join('\r\n'));
-  await Process.start('cmd', ['/c', script.path], mode: ProcessStartMode.detached, runInShell: false);
+  await Process.start(
+    'powershell',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script.path],
+    mode: ProcessStartMode.detached,
+  );
+  onProgress(1);
+  await Future.delayed(const Duration(milliseconds: 1500)); // let the app show "installing"
   exit(0);
 }
