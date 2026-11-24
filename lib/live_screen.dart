@@ -1215,8 +1215,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           if (!p.placeholder && p.start.isAfter(now)) return _openShow(ch, p);
         }
         if (ch.id == playingId) return _goFull();
-        _tune(ch);
-        _toast('▶ ${app.nameOf(ch)}');
+        _tune(ch); // the preview shows the channel name, so no pop-up needed
         return;
       case 'menu':
         return _openMenu();
