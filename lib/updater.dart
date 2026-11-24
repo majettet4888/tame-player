@@ -74,11 +74,13 @@ Future<void> installWindowsUpdate(UpdateInfo u, void Function(double progress) o
     'Start-Process -FilePath ${q(exe)}',
     '',
   ].join('\r\n'));
-  await Process.start(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script.path],
-    mode: ProcessStartMode.detached,
-  );
+  final psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script.path];
+  try {
+    // conhost --headless runs the installer with no window at all (Windows Terminal ignores "hidden")
+    await Process.start('conhost.exe', ['--headless', 'powershell.exe', ...psArgs], mode: ProcessStartMode.detached);
+  } catch (_) {
+    await Process.start('powershell', psArgs, mode: ProcessStartMode.detached);
+  }
   onProgress(1);
   await Future.delayed(const Duration(milliseconds: 1500)); // let the app show "installing"
   exit(0);
