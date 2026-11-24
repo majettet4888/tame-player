@@ -49,6 +49,7 @@ class AppState extends ChangeNotifier {
   Set<int> hiddenCh = {};
   Map<int, String> renames = {};
   Set<String> lockedGroups = {};
+  List<Map<String, dynamic>> reminders = []; // {ch, start, title}
   int? lastChannelId;
   bool use24 = false;
   String fx = 'subtle';
@@ -122,6 +123,13 @@ class AppState extends ChangeNotifier {
       hiddenGroups = (_prefs.getStringList('hidden_${a.key}') ?? const <String>[]).toSet();
       hiddenCh = {for (final x in _prefs.getStringList('hiddench_${a.key}') ?? const <String>[]) int.tryParse(x) ?? -1}..remove(-1);
       lockedGroups = (_prefs.getStringList('locks_${a.key}') ?? const <String>[]).toSet();
+      try {
+        reminders = [
+          for (final r in jsonDecode(_prefs.getString('reminders_${a.key}') ?? '[]') as List) Map<String, dynamic>.from(r as Map),
+        ];
+      } catch (_) {
+        reminders = [];
+      }
       renames = {};
       try {
         final raw = _prefs.getString('renames_${a.key}');
@@ -225,6 +233,34 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool hasReminder(Channel c, Program p) =>
+      reminders.any((r) => r['ch'] == c.id && r['start'] == p.start.millisecondsSinceEpoch);
+
+  void toggleReminder(Channel c, Program p) {
+    final ms = p.start.millisecondsSinceEpoch;
+    final before = reminders.length;
+    reminders.removeWhere((r) => r['ch'] == c.id && r['start'] == ms);
+    if (reminders.length == before) reminders.add({'ch': c.id, 'start': ms, 'title': p.title});
+    _saveReminders();
+  }
+
+  /// Reminders whose show starts within a minute (removed once handed out).
+  List<Map<String, dynamic>> dueReminders() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final due = reminders.where((r) => (r['start'] as int) <= now + 60000).toList();
+    if (due.isNotEmpty) {
+      reminders.removeWhere((r) => (r['start'] as int) <= now + 60000);
+      _saveReminders();
+    }
+    return due.where((r) => (r['start'] as int) > now - 10 * 60000).toList(); // skip very old ones
+  }
+
+  void _saveReminders() {
+    final a = acc;
+    if (a != null) _prefs.setString('reminders_${a.key}', jsonEncode(reminders));
+    notifyListeners();
+  }
+
   bool isLocked(Channel c) => opt('pin', '').isNotEmpty && lockedGroups.contains(c.catId);
 
   Map<int, List<Program>> get loadedEpg => _epg;
@@ -298,7 +334,15 @@ class AppState extends ChangeNotifier {
     for (final p in list) {
       if (!p.end.isAfter(t) || !p.start.isBefore(rangeEnd)) continue;
       if (p.start.isBefore(t.subtract(const Duration(minutes: 1)))) continue; // overlapping duplicate
-      if (p.start.isAfter(t)) gap(t, p.start);
+      if (p.start.isAfter(t)) {
+        final g = p.start.difference(t);
+        if (g.inMinutes < 15 && out.isNotEmpty && !out.last.placeholder) {
+          final last = out.removeLast();
+          out.add(Program(last.start, p.start, last.title, last.desc)); // stretch over the short gap
+        } else {
+          gap(t, p.start);
+        }
+      }
       out.add(p);
       t = p.end.isAfter(t) ? p.end : t;
     }

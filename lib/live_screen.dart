@@ -25,13 +25,22 @@ int clampI(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
 class _SetItem {
   final String label, value;
   final void Function(int dir)? change;
-  final bool button, header;
-  _SetItem(this.label, this.value, this.change, {this.button = false}) : header = false;
+  final bool button, header, note;
+  _SetItem(this.label, this.value, this.change, {this.button = false})
+      : header = false,
+        note = false;
   _SetItem.header(this.label)
       : value = '',
         change = null,
         button = false,
-        header = true;
+        header = true,
+        note = false;
+  _SetItem.note(this.label)
+      : value = '',
+        change = null,
+        button = false,
+        header = true,
+        note = true;
 }
 
 class _Result {
@@ -68,6 +77,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   Area area = Area.guide;
   int catIdx = 0, menuIdx = 0, row = 0, top = 0, setIdx = 1, dlgIdx = 0;
+  String _dlgTitle = '', _dlgSub = '', _dlgNo = 'Stay', _dlgYes = 'Exit';
+  VoidCallback? _dlgYesAct;
+  Area _dlgFrom = Area.guide;
+  Program? _optProg;
   String setPage = 'main';
   double sw = 1280, sh = 720; // stage size: always fills the window exactly
   int get rows => clampI(((sh - 300 - 36 - 30) / kRowH).floor(), 3, 30);
@@ -134,6 +147,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       final minT = floor30(now);
       if (win.isBefore(minT)) win = minT;
       setState(() {});
+      _checkReminders();
     });
     app.addListener(_onApp);
     WidgetsBinding.instance.addPostFrameCallback((_) => _onApp());
@@ -462,6 +476,33 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   List<_SetItem> _pageItems() {
     final ch = _optCh;
     switch (setPage) {
+      case 'show':
+        {
+          final p = _optProg;
+          if (ch == null || p == null) return [_SetItem.header('Show')];
+          final now = DateTime.now();
+          final live = app.progAt(ch, now);
+          final has = app.hasReminder(ch, p);
+          return [
+            _SetItem.header(p.start.isAfter(now) ? 'Coming up' : 'On now'),
+            _SetItem.note('${p.title}\n${_dayName(p.start)} ${fmt(p.start)} – ${fmt(p.end)}  ·  ${ch.num} ${app.nameOf(ch)}'),
+            if (p.desc.isNotEmpty) _SetItem.note(p.desc),
+            _SetItem(has ? 'Cancel the reminder' : 'Remind me when it starts', has ? '⏰ set' : 'Starts in ${dur(p.start.difference(now))}',
+                (d) {
+              app.toggleReminder(ch, p);
+              _closeSettings();
+              _toast(has ? 'Reminder cancelled' : '★ I\'ll remind you at ${fmt(p.start)}');
+            }, button: true),
+            _SetItem('Watch this channel now', live.placeholder ? '' : 'On now: ${live.title}', (d) {
+              _closeSettings();
+              _tune(ch);
+            }, button: true),
+            _SetItem('Channel options', '›', (d) => setState(() {
+                  setPage = 'channel';
+                  setIdx = 1;
+                }), button: true),
+          ];
+        }
       case 'channel':
         if (ch == null) return [_SetItem.header('Channel')];
         final fav = app.favs.contains(ch.id);
@@ -1025,10 +1066,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   void _backOrExit() {
     final now = DateTime.now();
     if (now.difference(_backAt).inMilliseconds < 2000) {
-      setState(() {
-        area = Area.dialog;
-        dlgIdx = 0;
-      });
+      _showDialog('Exit Tame Player?', 'Playback will stop.', 'Stay', 'Exit', _quit);
     } else {
       _backAt = now;
       _toast('Press back again to exit');
@@ -1069,6 +1107,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         }
       case 'ok':
         if (ch == null) return;
+        {
+          final p = app.progAt(ch, cursor);
+          if (!p.placeholder && p.start.isAfter(now)) return _openShow(ch, p);
+        }
         if (ch.id == playingId) return _goFull();
         _tune(ch);
         _toast('▶ ${app.nameOf(ch)}');
@@ -1200,20 +1242,54 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     }
   }
 
+  void _showDialog(String title, String sub, String no, String yes, VoidCallback yesAct, {int start = 0}) {
+    setState(() {
+      _dlgFrom = area == Area.full ? Area.full : Area.guide;
+      _dlgTitle = title;
+      _dlgSub = sub;
+      _dlgNo = no;
+      _dlgYes = yes;
+      _dlgYesAct = yesAct;
+      area = Area.dialog;
+      dlgIdx = start;
+    });
+  }
+
   void _dialogAct(String a) {
+    void close() => setState(() => area = _dlgFrom == Area.full && playingId != null ? Area.full : Area.guide);
     switch (a) {
       case 'left':
       case 'right':
         setState(() => dlgIdx = 1 - dlgIdx);
       case 'ok':
-        if (dlgIdx == 1) {
-          _quit();
-        } else {
-          setState(() => area = Area.guide);
-        }
+        close();
+        if (dlgIdx == 1) _dlgYesAct?.call();
       case 'back':
-        setState(() => area = Area.guide);
+        close();
     }
+  }
+
+  void _checkReminders() {
+    if (area != Area.guide && area != Area.full) return;
+    final due = app.dueReminders();
+    if (due.isEmpty) return;
+    final r = due.first;
+    final ch = app.byId[r['ch']];
+    if (ch == null) return;
+    _showDialog('Starting now: ${r['title']}', 'on ${ch.num} · ${app.nameOf(ch)}', 'Not now', 'Watch', () {
+      _tune(ch);
+      final i = list.indexWhere((c) => c.id == ch.id);
+      if (i >= 0) {
+        row = i;
+        _fixTop();
+      }
+      _goFull();
+    }, start: 1);
+  }
+
+  void _openShow(Channel ch, Program p) {
+    _optProg = p;
+    _openPanel('show', ch: ch);
   }
 
   void _tapCell(int r, Program p) {
@@ -1658,7 +1734,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                   padding: const EdgeInsets.fromLTRB(12, 7, 10, 0),
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(
-                      '${cut ? '‹ ' : ''}${p.title}',
+                      '${cut ? '‹ ' : ''}${app.hasReminder(list[r], p) ? '⏰ ' : ''}${p.title}',
                       maxLines: 1,
                       softWrap: false,
                       overflow: TextOverflow.ellipsis,
@@ -1953,6 +2029,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                           'locks': 'Settings › Locked groups',
                           'channel': 'Channel options',
                           'player': 'Player options',
+                          'show': 'Show details',
                         }[setPage] ??
                         'Settings',
                     style: ts(26, w: FontWeight.w800),
@@ -1962,7 +2039,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                   child: SingleChildScrollView(
                     child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                       for (var i = 0; i < items.length; i++)
-                        if (items[i].header)
+                        if (items[i].note)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(30, 4, 30, 8),
+                            child: Text(items[i].label, maxLines: 6, overflow: TextOverflow.ellipsis, style: ts(16, c: TP.dim2, h: 1.4)),
+                          )
+                        else if (items[i].header)
                           Padding(
                             padding: const EdgeInsets.fromLTRB(30, 16, 30, 6),
                             child: Text(items[i].label.toUpperCase(),
@@ -2162,7 +2244,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         color: const Color(0x8C0A1626),
         alignment: Alignment.center,
         child: Container(
-          width: 460,
+          width: 560,
           padding: const EdgeInsets.all(30),
           decoration: BoxDecoration(
             color: const Color(0xFF1F3A5D),
@@ -2170,11 +2252,11 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             border: Border.all(color: const Color(0x29C9D2DC)),
           ),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('Exit Tame Player?', style: ts(26, w: FontWeight.w800)),
+            Text(_dlgTitle, textAlign: TextAlign.center, style: ts(26, w: FontWeight.w800)),
             const SizedBox(height: 8),
-            Text('Playback will stop.', style: ts(16, c: TP.dim2)),
+            Text(_dlgSub, textAlign: TextAlign.center, style: ts(16, c: TP.dim2)),
             const SizedBox(height: 22),
-            Row(children: [btn('Stay', 0), const SizedBox(width: 14), btn('Exit', 1)]),
+            Row(children: [btn(_dlgNo, 0), const SizedBox(width: 14), btn(_dlgYes, 1)]),
           ]),
         ),
       ),
