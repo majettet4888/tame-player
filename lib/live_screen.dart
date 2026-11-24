@@ -13,6 +13,7 @@ import 'main.dart' show introDone;
 import 'state.dart';
 import 'theme.dart';
 import 'updater.dart';
+import 'vod_screen.dart';
 import 'widgets.dart';
 import 'xtream.dart';
 
@@ -54,7 +55,8 @@ class _Result {
 class _MenuItem {
   final String kind, label;
   final int cat, count;
-  _MenuItem(this.kind, this.label, {this.cat = -1, this.count = 0});
+  final IconData? icon;
+  _MenuItem(this.kind, this.label, {this.cat = -1, this.count = 0, this.icon});
 }
 
 class LiveScreen extends StatefulWidget {
@@ -468,6 +470,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     });
   }
 
+  void _openVod(bool series) {
+    final wasPlaying = playingId != null && !paused;
+    if (wasPlaying) player.pause();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => VodScreen(app: app, series: series))).then((_) {
+      if (!mounted) return;
+      if (wasPlaying) player.play();
+      _focus.requestFocus();
+    });
+  }
+
   void _addAccount() {
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => LoginScreen(app: app, addMode: true)))
@@ -479,10 +491,12 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   List<_MenuItem> get _menuItems {
     final cats = allCats;
     return [
+      _MenuItem('movies', 'Movies', icon: Icons.movie_creation_rounded),
+      _MenuItem('series', 'TV Shows', icon: Icons.video_library_rounded),
       for (var i = 0; i < cats.length; i++) _MenuItem('cat', cats[i].name, cat: i, count: app.countFor(cats[i])),
-      _MenuItem('search', '🔍  Search'),
-      _MenuItem('settings', '⚙  Settings'),
-      _MenuItem('add', '＋  Add a subscription'),
+      _MenuItem('search', 'Search', icon: Icons.search_rounded),
+      _MenuItem('settings', 'Settings', icon: Icons.settings_rounded),
+      _MenuItem('add', 'Add a subscription', icon: Icons.add_circle_outline_rounded),
     ];
   }
 
@@ -822,7 +836,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _openMenu() => setState(() {
         area = Area.menu;
-        menuIdx = catIdx;
+        menuIdx = catIdx + 2; // Movies and TV Shows sit above the groups
         _scrollMenu();
       });
 
@@ -1239,6 +1253,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           } else if (m.kind == 'search') {
             _closeMenu();
             _openInput('search');
+          } else if (m.kind == 'movies' || m.kind == 'series') {
+            _closeMenu();
+            _openVod(m.kind == 'series');
           } else {
             _closeMenu();
             _addAccount();
@@ -2194,6 +2211,11 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                     _act('ok');
                   },
                   child: Row(children: [
+                    if (m.icon != null)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: Icon(m.icon, size: 22, color: focused ? TP.ink : (m.kind == 'movies' || m.kind == 'series' ? TP.orange : TP.dim)),
+                      ),
                     if (m.kind == 'cat')
                       Container(
                         width: 9,

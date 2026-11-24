@@ -51,6 +51,30 @@ class Program {
   bool isLiveAt(DateTime t) => !start.isAfter(t) && end.isAfter(t);
 }
 
+class VodItem {
+  final int id;
+  final String name, rating, year, ext, plot;
+  final String? poster;
+  final bool series;
+  const VodItem({
+    required this.id,
+    required this.name,
+    required this.rating,
+    required this.year,
+    required this.ext,
+    required this.series,
+    this.poster,
+    this.plot = '',
+  });
+}
+
+class Episode {
+  final String id, title, ext, plot;
+  final int season, number, seconds;
+  final String? image;
+  const Episode(this.id, this.title, this.ext, this.plot, this.season, this.number, this.seconds, this.image);
+}
+
 class AccountInfo {
   final int maxConnections, activeConnections;
   final DateTime? expires;
@@ -165,6 +189,56 @@ class XtreamClient {
     out.sort((a, b) => a.start.compareTo(b.start));
     return out;
   }
+
+  // ---------------- Movies and TV shows (VOD) ----------------
+
+  Future<List<ChannelGroup>> vodCategories({bool series = false}) async {
+    final j = await _get({'action': series ? 'get_series_categories' : 'get_vod_categories'});
+    if (j is! List) return [];
+    return [
+      for (final c in j)
+        if (c is Map) ChannelGroup('${c['category_id']}', '${c['category_name'] ?? ''}'.trim()),
+    ];
+  }
+
+  Future<List<VodItem>> vodList(String catId, {bool series = false}) async {
+    final j = await _get({'action': series ? 'get_series' : 'get_vod_streams', 'category_id': catId}, seconds: 60);
+    if (j is! List) return [];
+    final out = <VodItem>[];
+    for (final v in j) {
+      if (v is! Map) continue;
+      final id = int.tryParse('${series ? v['series_id'] : v['stream_id']}');
+      if (id == null) continue;
+      final img = '${(series ? v['cover'] : v['stream_icon']) ?? ''}'.trim();
+      out.add(VodItem(
+        id: id,
+        name: '${v['name'] ?? ''}'.trim(),
+        poster: img.isEmpty ? null : img,
+        rating: '${v['rating'] ?? ''}'.trim(),
+        year: '${v['year'] ?? v['releaseDate'] ?? v['release_date'] ?? ''}'.trim(),
+        ext: '${v['container_extension'] ?? 'mp4'}',
+        series: series,
+        plot: '${v['plot'] ?? ''}'.trim(),
+      ));
+    }
+    return out;
+  }
+
+  Future<Map<String, dynamic>> vodInfo(int id) async {
+    final j = await _get({'action': 'get_vod_info', 'vod_id': '$id'});
+    return j is Map ? Map<String, dynamic>.from(j) : {};
+  }
+
+  Future<Map<String, dynamic>> seriesInfo(int id) async {
+    final j = await _get({'action': 'get_series_info', 'series_id': '$id'});
+    return j is Map ? Map<String, dynamic>.from(j) : {};
+  }
+
+  String movieUrl(int id, String ext) =>
+      '${acc.server}/movie/${Uri.encodeComponent(acc.user)}/${Uri.encodeComponent(acc.pass)}/$id.$ext';
+
+  String episodeUrl(String id, String ext) =>
+      '${acc.server}/series/${Uri.encodeComponent(acc.user)}/${Uri.encodeComponent(acc.pass)}/$id.$ext';
 
   String get xmltvUrl =>
       '${acc.server}/xmltv.php?username=${Uri.encodeQueryComponent(acc.user)}&password=${Uri.encodeQueryComponent(acc.pass)}';

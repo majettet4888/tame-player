@@ -198,6 +198,10 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // resume positions for movies and episodes (seconds)
+  int vodPos(String key) => _prefs.getInt('pos_${acc?.key}_$key') ?? 0;
+  void setVodPos(String key, int seconds) => _prefs.setInt('pos_${acc?.key}_$key', seconds);
+
   int get shiftHours => int.tryParse(opt('shift', '0')) ?? 0;
 
   void refreshGuide() {
