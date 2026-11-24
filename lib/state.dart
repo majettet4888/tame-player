@@ -304,6 +304,17 @@ class AppState extends ChangeNotifier {
   }
 
   List<Channel> listFor(ChannelGroup c) {
+    final l = _listFor(c);
+    if (c.id == '__recent') return l;
+    final sort = opt('sort', 'provider');
+    if (sort == 'az') {
+      return [...l]..sort((a, b) => nameOf(a).toLowerCase().compareTo(nameOf(b).toLowerCase()));
+    }
+    if (sort == 'number') return [...l]..sort((a, b) => a.num.compareTo(b.num));
+    return l;
+  }
+
+  List<Channel> _listFor(ChannelGroup c) {
     if (c.id == '__all') {
       if (hiddenGroups.isEmpty && hiddenCh.isEmpty) return channels;
       return channels.where((x) => !hiddenGroups.contains(x.catId) && !hiddenCh.contains(x.id)).toList();

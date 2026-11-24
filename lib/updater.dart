@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
+
+import 'package:archive/archive_io.dart';
 
 import 'package:http/http.dart' as http;
 
@@ -64,12 +67,14 @@ Future<void> installWindowsUpdate(UpdateInfo u, void Function(double progress) o
   final appDir = File(exe).parent.path;
   final unzipTo = '${tmp.path}\\new';
   String q(String v) => "'${v.replaceAll("'", "''")}'"; // PowerShell single-quoted string
+  // unzip now, while the app is still open, so the closed time is just a quick copy
+  final zipPath = zip.path;
+  await Isolate.run(() => extractFileToDisk(zipPath, unzipTo));
   final script = File('${tmp.path}\\update.ps1');
   await script.writeAsString([
     r"$ProgressPreference = 'SilentlyContinue'",
     'Wait-Process -Id $pid -Timeout 20 -ErrorAction SilentlyContinue',
-    'Start-Sleep -Milliseconds 500',
-    'Expand-Archive -LiteralPath ${q(zip.path)} -DestinationPath ${q(unzipTo)} -Force',
+    'Start-Sleep -Milliseconds 300',
     "Copy-Item -Path ${q('$unzipTo\\*')} -Destination ${q(appDir)} -Recurse -Force",
     'Start-Process -FilePath ${q(exe)}',
     '',

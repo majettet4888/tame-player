@@ -449,7 +449,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     if (!mounted) return;
     setState(() => _upd = u);
     if (u != null) {
-      _toast('★ Update available: open Settings to install');
+      if (area == Area.settings) {
+        _toast('★ Build ${u.build} is ready: press OK to install');
+        final i = _settings.indexWhere((x) => x.label.startsWith('Install the update'));
+        if (i >= 0) {
+          setState(() => setIdx = i);
+          _scrollSettings();
+        }
+      } else {
+        _toast('★ Build ${u.build} is ready: Menu › Settings › About to install');
+      }
     } else if (manual) {
       _toast(kBuild == 0 ? 'This copy can\'t check for updates' : 'You have the newest version');
     }
@@ -715,6 +724,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _toast('TV guide reloading');
       }, button: true),
       _SetItem.header('Channels'),
+      _choice('Channel order', 'sort', 'provider', const {'provider': 'Provider', 'number': 'By number', 'az': 'A to Z'}),
       _SetItem('Hidden channels', '${app.hiddenCh.length} hidden  ›', (d) => setState(() {
             setPage = 'hiddench';
             setIdx = 1;
@@ -2133,9 +2143,47 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                     child: Text('❚❚', style: ts(full ? 48 : 26, c: Colors.white)),
                   ),
                 ),
+              if (!full && ch != null) _previewLabel(ch),
               if (full && osd) _osd(),
             ]),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _previewLabel(Channel ch) {
+    final p = app.progAt(ch, DateTime.now());
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: IgnorePointer(
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 26, 14, 10),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: [Color(0xE6050C16), Color(0x00050C16)],
+            ),
+          ),
+          child: Row(children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(color: TP.orange, borderRadius: BorderRadius.circular(5)),
+              child: Text('${ch.num}', style: ts(13, w: FontWeight.w800, c: const Color(0xFF111111))),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                p.placeholder ? app.nameOf(ch) : '${app.nameOf(ch)}  ·  ${p.title}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: ts(15, w: FontWeight.w700, c: Colors.white),
+              ),
+            ),
+          ]),
         ),
       ),
     );
