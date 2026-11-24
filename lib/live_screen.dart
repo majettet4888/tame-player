@@ -574,6 +574,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     return [
       _SetItem.header('General'),
       _choice('When the app opens', 'start', 'last', const {'last': 'Play the last channel', 'guide': 'Show the guide only'}),
+      _choice('Intro sound', 'introsound', 'on', const {'on': 'On', 'off': 'Off'}),
       _SetItem('Time format', app.use24 ? '24-hour' : '12-hour', (d) => app.setUse24(!app.use24)),
       _SetItem.header('Appearance'),
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),

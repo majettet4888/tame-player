@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'live_screen.dart';
 import 'login_screen.dart';
@@ -73,6 +74,24 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
       if (s == AnimationStatus.completed && mounted) setState(() => done = true);
     });
     c.forward();
+    _playSound();
+  }
+
+  Player? _sound;
+
+  Future<void> _playSound() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if ((prefs.getString('opt_introsound') ?? 'on') != 'on') return;
+      final p = Player();
+      _sound = p;
+      await p.setVolume(80);
+      await p.open(Media('asset:///assets/intro.wav'));
+      Future.delayed(const Duration(seconds: 4), () {
+        p.dispose();
+        if (identical(_sound, p)) _sound = null;
+      });
+    } catch (_) {}
   }
 
   @override
