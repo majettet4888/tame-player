@@ -451,18 +451,23 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     setState(() => _upd = u);
     if (u != null) {
       if (area == Area.settings) {
-        _toast('★ Build ${u.build} is ready: press OK to install');
-        final i = _settings.indexWhere((x) => x.label.startsWith('Install the update'));
-        if (i >= 0) {
-          setState(() => setIdx = i);
-          _scrollSettings();
-        }
+        _toast('★ Build ${u.build} is ready: press OK again to install');
       } else {
         _toast('★ Build ${u.build} is ready: Menu › Settings › About to install');
       }
     } else if (manual) {
       _toast(kBuild == 0 ? 'This copy can\'t check for updates' : 'You have the newest version');
     }
+  }
+
+  // one button: checks first; once an update is found, the same button installs it
+  Future<void> _updateButton() async {
+    if (_updProg != null) return;
+    if (_upd == null || !canInstallUpdates) return _checkUpdate(manual: true);
+    final fresh = await checkForUpdate(); // always install the newest build
+    if (!mounted) return;
+    if (fresh != null) setState(() => _upd = fresh);
+    _startUpdate();
   }
 
   void _startUpdate() {
@@ -849,16 +854,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _toast('Favorites cleared');
       }, button: true),
       _SetItem.header('About'),
-      if (_upd != null)
-        _SetItem(
-          canInstallUpdates ? 'Install the update (build ${_upd!.build})' : 'Update available (build ${_upd!.build})',
-          _updProg != null
-              ? (_updProg! >= 1 ? 'Installing… reopening' : 'Downloading ${(100 * _updProg!).round()}%')
-              : (canInstallUpdates ? 'The app restarts by itself' : 'Install the new TamePlayer.apk'),
-          canInstallUpdates ? (d) => _startUpdate() : null,
-          button: true,
-        ),
-      _SetItem('Check for updates', '', (d) => _checkUpdate(manual: true), button: true),
+      _SetItem(
+        _upd == null
+            ? 'Check for updates'
+            : (canInstallUpdates ? 'Install update (build ${_upd!.build})' : 'Update available (build ${_upd!.build})'),
+        _updProg != null
+            ? (_updProg! >= 1 ? 'Installing… reopening' : 'Downloading ${(100 * _updProg!).round()}%')
+            : (_upd == null ? '' : (canInstallUpdates ? 'The app restarts by itself' : 'Install the new TamePlayer.apk')),
+        (d) => _updateButton(),
+        button: true,
+      ),
       _SetItem('Tame Player 0.1 · build $kBuild', exp == null ? '' : 'Subscription ends ${exp.month}/${exp.day}/${exp.year}', null,
           button: true),
     ];
