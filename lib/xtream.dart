@@ -5,13 +5,19 @@ import 'package:http/http.dart' as http;
 /// One Xtream Codes subscription.
 class Account {
   final String name, server, user, pass;
-  Account({required this.name, required this.server, required this.user, required this.pass});
 
-  String get key => '$server|$user';
+  /// Stays the same when the login is edited, so favorites, hidden channels,
+  /// reminders etc. carry over to the new server/username/password.
+  final String id;
+  Account({required this.name, required this.server, required this.user, required this.pass, String? id})
+      : id = id ?? '$server|$user';
 
-  Map<String, dynamic> toJson() => {'name': name, 'server': server, 'user': user, 'pass': pass};
+  String get key => id;
+
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'server': server, 'user': user, 'pass': pass};
 
   factory Account.fromJson(Map<String, dynamic> j) => Account(
+        id: j['id'] == null ? null : '${j['id']}',
         name: '${j['name'] ?? ''}',
         server: '${j['server'] ?? ''}',
         user: '${j['user'] ?? ''}',

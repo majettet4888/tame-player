@@ -786,6 +786,13 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           },
           button: true,
         ),
+      if (app.acc != null)
+        _SetItem('Change login details', 'New server, username or password', (d) {
+          _closeSettings();
+          Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => LoginScreen(app: app, editIndex: app.active)))
+              .then((_) => _focus.requestFocus());
+        }, button: true),
       _SetItem('Add a subscription', '', (d) {
         _closeSettings();
         _addAccount();

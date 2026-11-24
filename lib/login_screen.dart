@@ -7,7 +7,10 @@ import 'xtream.dart';
 class LoginScreen extends StatefulWidget {
   final AppState app;
   final bool addMode;
-  const LoginScreen({super.key, required this.app, this.addMode = false});
+
+  /// When set, edits that subscription's login instead of adding a new one.
+  final int? editIndex;
+  const LoginScreen({super.key, required this.app, this.addMode = false, this.editIndex});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -20,6 +23,21 @@ class _LoginScreenState extends State<LoginScreen> {
   final _pass = TextEditingController();
   bool _busy = false;
   String? _err;
+
+  bool get _editing => widget.editIndex != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final i = widget.editIndex;
+    if (i != null && i < widget.app.accounts.length) {
+      final a = widget.app.accounts[i];
+      _name.text = a.name;
+      _server.text = a.server;
+      _user.text = a.user;
+      _pass.text = a.pass;
+    }
+  }
 
   @override
   void dispose() {
@@ -47,7 +65,8 @@ class _LoginScreenState extends State<LoginScreen> {
       _busy = true;
       _err = null;
     });
-    final err = await widget.app.addAccount(Account(name: name, server: server, user: user, pass: pass));
+    final acct = Account(name: name, server: server, user: user, pass: pass);
+    final err = _editing ? await widget.app.updateAccount(widget.editIndex!, acct) : await widget.app.addAccount(acct);
     if (!mounted) return;
     if (err != null) {
       setState(() {
@@ -56,7 +75,7 @@ class _LoginScreenState extends State<LoginScreen> {
       });
       return;
     }
-    if (widget.addMode) Navigator.of(context).pop();
+    if (widget.addMode || _editing) Navigator.of(context).pop();
   }
 
   InputDecoration _dec(String hint) => InputDecoration(
@@ -122,7 +141,13 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
       child: FocusTraversalGroup(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-          Text(widget.addMode ? 'Add a subscription' : 'Sign in with Xtream Codes', style: ts(20, w: FontWeight.w700)),
+          Text(_editing ? 'Change login details' : (widget.addMode ? 'Add a subscription' : 'Sign in with Xtream Codes'),
+              style: ts(20, w: FontWeight.w700)),
+          if (_editing) ...[
+            const SizedBox(height: 6),
+            Text('Your favorites, hidden channels, locks and reminders stay as they are.',
+                style: ts(13.5, c: const Color(0xFFB8C8D8), h: 1.35)),
+          ],
           const SizedBox(height: 16),
           _field('Server URL', _server, hint: 'http://provider.com:8080', autofocus: true),
           _field('Username', _user),
@@ -130,7 +155,7 @@ class _LoginScreenState extends State<LoginScreen> {
           _field('Name (optional)', _name, hint: 'e.g. Main 4-screen', action: TextInputAction.done, onDone: _submit),
           const SizedBox(height: 4),
           Row(children: [
-            if (widget.addMode) ...[
+            if (widget.addMode || _editing) ...[
               Expanded(
                 child: FilledButton(
                   style: _btn(const Color(0xFF35577F), Colors.white),
@@ -146,7 +171,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 onPressed: _busy ? null : _submit,
                 child: _busy
                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF111111)))
-                    : Text(widget.addMode ? 'Add' : 'Sign in'),
+                    : Text(_editing ? 'Save' : (widget.addMode ? 'Add' : 'Sign in')),
               ),
             ),
           ]),

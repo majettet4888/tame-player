@@ -171,6 +171,20 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
+  /// Changes the server/username/password of subscription [i], keeping all its settings.
+  Future<String?> updateAccount(int i, Account a) async {
+    if (i < 0 || i >= accounts.length) return 'That subscription is gone.';
+    try {
+      await XtreamClient(a).login();
+    } catch (e) {
+      return friendlyError(e);
+    }
+    accounts[i] = Account(id: accounts[i].id, name: a.name, server: a.server, user: a.user, pass: a.pass);
+    await _saveAccounts();
+    await openAccount(i);
+    return null;
+  }
+
   Future<void> removeActive() async {
     if (acc == null) return;
     accounts.removeAt(active);
