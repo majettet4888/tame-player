@@ -176,8 +176,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     super.dispose();
   }
 
+  bool _hadFullGuide = false;
+
   void _onApp() {
     if (!mounted) return;
+    if (app.fullGuideLoaded != _hadFullGuide) {
+      _hadFullGuide = app.fullGuideLoaded;
+      if (area == Area.input && _inputMode == 'search') {
+        WidgetsBinding.instance.addPostFrameCallback((_) => _onInputChanged(_inputCtl.text));
+      }
+    }
     if (!identical(app.channels, _seen)) {
       _seen = app.channels;
       if (app.channels.isEmpty) {
@@ -848,6 +856,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   // ---------------------------------------------------------------- search / rename / PIN
 
   void _openInput(String mode, {String initial = ''}) {
+    if (mode == 'search') app.loadFullGuide();
     setState(() {
       if (area != Area.input) _panelFrom = area == Area.full ? Area.full : Area.guide;
       area = Area.input;
@@ -904,7 +913,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       }
       final now = DateTime.now();
       final shows = <_Result>[];
-      app.loadedEpg.forEach((id, progs) {
+      app.searchableGuide.forEach((id, progs) {
         final c = app.byId[id];
         if (c == null || app.hiddenCh.contains(id)) return;
         for (final p in progs) {
@@ -2389,8 +2398,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                             padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
                             child: Text(
                               _inputCtl.text.trim().length < 2
-                                  ? 'Type at least 2 letters. Searches channel names and the shows in the guide.'
-                                  : 'Nothing found.',
+                                  ? 'Type at least 2 letters. Searches channel names and shows on every channel.'
+                                  : (app.fullGuideLoading ? 'Still loading the full TV guide… results will appear in a moment.' : 'Nothing found.'),
                               style: ts(16, c: TP.dim2, h: 1.4),
                             ),
                           )

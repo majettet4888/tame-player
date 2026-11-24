@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -44,6 +45,9 @@ class AppState extends ChangeNotifier {
   int _inFlight = 0;
   final List<int> _queue = [];
 
+  /// The whole guide for every channel (downloaded in the background for search).
+  Map<int, List<Program>> fullGuide = {};
+  bool fullGuideLoading = false, fullGuideLoaded = false;
   Set<int> favs = {};
   Set<String> hiddenGroups = {};
   Set<int> hiddenCh = {};
@@ -143,6 +147,9 @@ class AppState extends ChangeNotifier {
         }
       } catch (_) {}
       channels = ch;
+      fullGuide = {};
+      fullGuideLoaded = false;
+      Future.delayed(const Duration(seconds: 8), loadFullGuide);
     } catch (e) {
       error = friendlyError(e);
     }
@@ -340,6 +347,58 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Downloads the provider's complete guide once, so search covers every channel and group.
+  Future<void> loadFullGuide() async {
+    final c = client;
+    if (c == null || fullGuideLoading || fullGuideLoaded || channels.isEmpty) return;
+    fullGuideLoading = true;
+    notifyListeners();
+    try {
+      final url = c.xmltvUrl;
+      final from = DateTime.now().subtract(const Duration(hours: 4)).millisecondsSinceEpoch;
+      final to = rangeEnd.millisecondsSinceEpoch;
+      final raw = await Isolate.run(() => downloadFullGuide(url, from, to));
+      if (!identical(c, client)) return;
+      final byEpg = <String, List<int>>{};
+      for (final ch in channels) {
+        if (ch.epgId.isNotEmpty) (byEpg[ch.epgId] ??= []).add(ch.id);
+      }
+      final sh = Duration(hours: shiftHours);
+      final g = <int, List<Program>>{};
+      raw.forEach((epgId, rows) {
+        final ids = byEpg[epgId];
+        if (ids == null) return;
+        final progs = [
+          for (final r in rows)
+            Program(
+              DateTime.fromMillisecondsSinceEpoch(r[0] as int).add(sh),
+              DateTime.fromMillisecondsSinceEpoch(r[1] as int).add(sh),
+              r[2] as String,
+              r[3] as String,
+            ),
+        ]..sort((a, b) => a.start.compareTo(b.start));
+        for (final id in ids) {
+          g[id] = progs;
+        }
+      });
+      fullGuide = g;
+      fullGuideLoaded = g.isNotEmpty;
+    } catch (_) {
+      // search falls back to the shows already loaded
+    } finally {
+      fullGuideLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Every channel's shows that search can look through.
+  Map<int, List<Program>> get searchableGuide {
+    if (fullGuide.isEmpty) return _epg;
+    final m = <int, List<Program>>{...fullGuide};
+    _epg.forEach((k, v) => m.putIfAbsent(k, () => v));
+    return m;
+  }
+
   // ---------------- TV guide ----------------
 
   List<Program> _fillGaps(List<Program> list) {
@@ -392,6 +451,11 @@ class AppState extends ChangeNotifier {
     if (client == null) return;
     for (final c in chs) {
       if (_epg.containsKey(c.id) || _pending.contains(c.id)) continue;
+      final full = fullGuide[c.id];
+      if (full != null && full.isNotEmpty) {
+        _epg[c.id] = _fillGaps(full);
+        continue;
+      }
       _pending.add(c.id);
       _queue.add(c.id);
     }

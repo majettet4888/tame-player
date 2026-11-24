@@ -29,7 +29,9 @@ class Channel {
   final String name, catId;
   final String? icon;
   final bool catchup;
+  final String epgId;
   const Channel({
+    this.epgId = '',
     required this.id,
     required this.num,
     required this.name,
@@ -133,6 +135,7 @@ class XtreamClient {
         catId: '${s['category_id'] ?? ''}',
         icon: (icon is String && icon.trim().isNotEmpty) ? icon.trim() : null,
         catchup: '${s['tv_archive']}' == '1',
+        epgId: '${s['epg_channel_id'] ?? ''}'.trim(),
         hue: (id * 37) % 360,
       ));
     }
@@ -163,6 +166,70 @@ class XtreamClient {
     return out;
   }
 
+  String get xmltvUrl =>
+      '${acc.server}/xmltv.php?username=${Uri.encodeQueryComponent(acc.user)}&password=${Uri.encodeQueryComponent(acc.pass)}';
+
   String liveUrl(int id, {String ext = 'ts'}) =>
       '${acc.server}/live/${Uri.encodeComponent(acc.user)}/${Uri.encodeComponent(acc.pass)}/$id.$ext';
+}
+
+
+String _unescape(String v) => v
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&')
+    .trim();
+
+DateTime? _xmltvTime(String v) {
+  final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-])?(\d{2})?(\d{2})?').firstMatch(v.trim());
+  if (m == null) return null;
+  var t = DateTime.utc(int.parse(m[1]!), int.parse(m[2]!), int.parse(m[3]!), int.parse(m[4]!), int.parse(m[5]!), int.parse(m[6]!));
+  if (m[7] != null && m[8] != null) {
+    final off = Duration(hours: int.parse(m[8]!), minutes: int.parse(m[9] ?? '0'));
+    t = m[7] == '+' ? t.subtract(off) : t.add(off);
+  }
+  return t.toLocal();
+}
+
+/// Downloads the provider's whole guide (XMLTV) and keeps shows between [fromMs] and [toMs].
+/// Runs in a background isolate. Returns epg channel id -> [[startMs, endMs, title, desc], ...].
+Future<Map<String, List<List<Object>>>> downloadFullGuide(String url, int fromMs, int toMs) async {
+  final out = <String, List<List<Object>>>{};
+  final client = http.Client();
+  try {
+    final res = await client.send(http.Request('GET', Uri.parse(url))..headers['User-Agent'] = 'TamePlayer/0.1');
+    if (res.statusCode != 200) return out;
+    final progRe = RegExp(r'<programme\b([^>]*)>([\s\S]*?)</programme>');
+    final attrRe = RegExp(r'(\w+)="([^"]*)"');
+    final titleRe = RegExp(r'<title[^>]*>([\s\S]*?)</title>');
+    final descRe = RegExp(r'<desc[^>]*>([\s\S]*?)</desc>');
+    var buf = StringBuffer();
+    await for (final chunk in res.stream.transform(utf8.decoder)) {
+      buf.write(chunk);
+      final text = buf.toString();
+      final last = text.lastIndexOf('</programme>');
+      if (last < 0) continue;
+      final head = text.substring(0, last + 12);
+      buf = StringBuffer(text.substring(last + 12));
+      for (final m in progRe.allMatches(head)) {
+        final attrs = {for (final a in attrRe.allMatches(m[1]!)) a[1]!: a[2]!};
+        final start = _xmltvTime(attrs['start'] ?? '');
+        final stop = _xmltvTime(attrs['stop'] ?? '');
+        final ch = attrs['channel'];
+        if (start == null || stop == null || ch == null) continue;
+        final s = start.millisecondsSinceEpoch, e = stop.millisecondsSinceEpoch;
+        if (e <= fromMs || s >= toMs || e <= s) continue;
+        final title = _unescape(titleRe.firstMatch(m[2]!)?[1] ?? '');
+        var desc = _unescape(descRe.firstMatch(m[2]!)?[1] ?? '');
+        if (desc.length > 400) desc = '${desc.substring(0, 400)}…';
+        (out[ch] ??= []).add([s, e, title.isEmpty ? '—' : title, desc]);
+      }
+    }
+  } finally {
+    client.close();
+  }
+  return out;
 }
