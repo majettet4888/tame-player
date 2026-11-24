@@ -11,6 +11,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'login_screen.dart';
 import 'state.dart';
 import 'theme.dart';
+import 'updater.dart';
 import 'widgets.dart';
 import 'xtream.dart';
 
@@ -65,6 +66,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   int get rows => clampI(((sh - 300 - 36 - 30) / kRowH).floor(), 3, 30);
   int get winMin => ((sw - kChW) / kPxPerMin).floor();
   String _catId = '__all';
+  UpdateInfo? _upd;
+  double? _updProg;
   final GlobalKey _setFocusKey = GlobalKey();
   List<Channel> list = [];
   DateTime cursor = DateTime.now();
@@ -103,6 +106,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     });
     app.addListener(_onApp);
     WidgetsBinding.instance.addPostFrameCallback((_) => _onApp());
+    Future.delayed(const Duration(seconds: 5), () => _checkUpdate(manual: false));
   }
 
   @override
@@ -311,6 +315,30 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     }
   }
 
+  Future<void> _checkUpdate({required bool manual}) async {
+    final u = await checkForUpdate();
+    if (!mounted) return;
+    setState(() => _upd = u);
+    if (u != null) {
+      _toast('★ Update available: open Settings to install');
+    } else if (manual) {
+      _toast(kBuild == 0 ? 'This copy can\'t check for updates' : 'You have the newest version');
+    }
+  }
+
+  void _startUpdate() {
+    final u = _upd;
+    if (u == null || _updProg != null) return;
+    setState(() => _updProg = 0);
+    installWindowsUpdate(u, (p) {
+      if (mounted) setState(() => _updProg = p);
+    }).catchError((Object e) {
+      if (!mounted) return;
+      setState(() => _updProg = null);
+      _toast('The update didn\'t finish. Try again later.');
+    });
+  }
+
   void _addAccount() {
     Navigator.of(context)
         .push(MaterialPageRoute(builder: (_) => LoginScreen(app: app, addMode: true)))
@@ -416,7 +444,18 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _toast('Favorites cleared');
       }, button: true),
       _SetItem.header('About'),
-      _SetItem('Tame Player 0.1', exp == null ? '' : 'Subscription ends ${exp.month}/${exp.day}/${exp.year}', null, button: true),
+      if (_upd != null)
+        _SetItem(
+          canInstallUpdates ? 'Install the update (build ${_upd!.build})' : 'Update available (build ${_upd!.build})',
+          _updProg != null
+              ? 'Downloading ${(100 * _updProg!).round()}%'
+              : (canInstallUpdates ? 'The app restarts by itself' : 'Install the new TamePlayer.apk'),
+          canInstallUpdates ? (d) => _startUpdate() : null,
+          button: true,
+        ),
+      _SetItem('Check for updates', '', (d) => _checkUpdate(manual: true), button: true),
+      _SetItem('Tame Player 0.1 · build $kBuild', exp == null ? '' : 'Subscription ends ${exp.month}/${exp.day}/${exp.year}', null,
+          button: true),
     ];
   }
 

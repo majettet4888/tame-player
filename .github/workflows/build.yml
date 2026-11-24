@@ -25,7 +25,7 @@ jobs:
       # Fills in the standard Flutter project files we don't keep in the repo (it never overwrites ours)
       - run: flutter create --org com.tameplayer --project-name tame_player --platforms=android,windows .
       - run: flutter pub get
-      - run: flutter build apk --release
+      - run: flutter build apk --release --dart-define=BUILD=${{ github.run_number }}
       - run: cp build/app/outputs/flutter-apk/app-release.apk TamePlayer.apk
       - uses: actions/upload-artifact@v4
         with:
@@ -43,7 +43,7 @@ jobs:
           cache: true
       - run: flutter create --org com.tameplayer --project-name tame_player --platforms=android,windows .
       - run: flutter pub get
-      - run: flutter build windows --release
+      - run: flutter build windows --release --dart-define=BUILD=${{ github.run_number }}
       - name: Zip the app
         shell: pwsh
         run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath TamePlayer-Windows.zip
