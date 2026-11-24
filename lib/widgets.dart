@@ -37,10 +37,11 @@ class ChannelBadge extends StatelessWidget {
         height: h,
         child: icon == null
             ? initials
-            : Container(
-                color: const Color(0xFF0A1220),
-                padding: const EdgeInsets.all(2),
-                child: Image.network(icon, fit: BoxFit.contain, errorBuilder: (ctx, err, st) => initials),
+            : Image.network(
+                icon,
+                fit: BoxFit.contain,
+                filterQuality: FilterQuality.medium,
+                errorBuilder: (ctx, err, st) => initials,
               ),
       ),
     );
