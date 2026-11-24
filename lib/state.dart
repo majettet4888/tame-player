@@ -45,6 +45,7 @@ class AppState extends ChangeNotifier {
   final List<int> _queue = [];
 
   Set<int> favs = {};
+  Set<String> hiddenGroups = {};
   int? lastChannelId;
   bool use24 = false;
   String fx = 'subtle';
@@ -114,6 +115,7 @@ class AppState extends ChangeNotifier {
       catCounts = counts;
       favs = {for (final s in _prefs.getStringList('favs_${a.key}') ?? const <String>[]) int.tryParse(s) ?? -1}..remove(-1);
       lastChannelId = _prefs.getInt('last_${a.key}');
+      hiddenGroups = (_prefs.getStringList('hidden_${a.key}') ?? const <String>[]).toSet();
       channels = ch;
     } catch (e) {
       error = friendlyError(e);
@@ -151,14 +153,57 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ---------------- simple saved options ----------------
+  String opt(String key, String def) => _prefs.getString('opt_$key') ?? def;
+  void setOpt(String key, String v) {
+    _prefs.setString('opt_$key', v);
+    if (key == 'shift') {
+      resetRange();
+      _pending.clear();
+      _queue.clear();
+    }
+    notifyListeners();
+  }
+
+  int get shiftHours => int.tryParse(opt('shift', '0')) ?? 0;
+
+  void refreshGuide() {
+    resetRange();
+    _pending.clear();
+    _queue.clear();
+    notifyListeners();
+  }
+
+  void clearFavs() {
+    favs.clear();
+    final a = acc;
+    if (a != null) _prefs.setStringList('favs_${a.key}', const []);
+    notifyListeners();
+  }
+
+  List<ChannelGroup> get visibleCats => cats.where((c) => !hiddenGroups.contains(c.id)).toList();
+
+  void toggleHidden(String groupId) {
+    if (!hiddenGroups.remove(groupId)) hiddenGroups.add(groupId);
+    final a = acc;
+    if (a != null) _prefs.setStringList('hidden_${a.key}', hiddenGroups.toList());
+    notifyListeners();
+  }
+
   int countFor(ChannelGroup c) {
-    if (c.id == '__all') return channels.length;
+    if (c.id == '__all') {
+      if (hiddenGroups.isEmpty) return channels.length;
+      return channels.where((x) => !hiddenGroups.contains(x.catId)).length;
+    }
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).length;
     return catCounts[c.id] ?? 0;
   }
 
   List<Channel> listFor(ChannelGroup c) {
-    if (c.id == '__all') return channels;
+    if (c.id == '__all') {
+      if (hiddenGroups.isEmpty) return channels;
+      return channels.where((x) => !hiddenGroups.contains(x.catId)).toList();
+    }
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).toList();
     return channels.where((x) => x.catId == c.id).toList();
   }
@@ -249,7 +294,12 @@ class AppState extends ChangeNotifier {
   Future<void> _fetch(int id) async {
     final c = client;
     try {
-      final l = c == null ? <Program>[] : await c.epg(id);
+      var l = c == null ? <Program>[] : await c.epg(id);
+      final sh = shiftHours;
+      if (sh != 0) {
+        final d = Duration(hours: sh);
+        l = [for (final p in l) Program(p.start.add(d), p.end.add(d), p.title, p.desc)];
+      }
       if (identical(c, client)) _epg[id] = _fillGaps(l);
     } catch (_) {
       if (identical(c, client)) _epg[id] = _fillGaps(const []);

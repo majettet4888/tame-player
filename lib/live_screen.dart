@@ -24,9 +24,14 @@ int clampI(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
 
 class _SetItem {
   final String label, value;
-  final void Function(int dir) change;
-  final bool button;
-  _SetItem(this.label, this.value, this.change, {this.button = false});
+  final void Function(int dir)? change;
+  final bool button, header;
+  _SetItem(this.label, this.value, this.change, {this.button = false}) : header = false;
+  _SetItem.header(this.label)
+      : value = '',
+        change = null,
+        button = false,
+        header = true;
 }
 
 class _MenuItem {
@@ -55,7 +60,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   Timer? _tick, _osdTimer, _toastTimer;
 
   Area area = Area.guide;
-  int catIdx = 0, menuIdx = 0, row = 0, top = 0, setIdx = 0, dlgIdx = 0;
+  int catIdx = 0, menuIdx = 0, row = 0, top = 0, setIdx = 1, dlgIdx = 0;
+  String setPage = 'main';
+  String _catId = '__all';
+  final GlobalKey _setFocusKey = GlobalKey();
   List<Channel> list = [];
   DateTime cursor = DateTime.now();
   DateTime win = floor30(DateTime.now());
@@ -70,8 +78,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
-    player = Player();
-    vc = VideoController(player);
+    const bufMb = {'normal': 32, 'large': 64, 'xl': 128};
+    player = Player(configuration: PlayerConfiguration(bufferSize: (bufMb[app.opt('buf', 'normal')] ?? 32) * 1024 * 1024));
+    vc = VideoController(player,
+        configuration: VideoControllerConfiguration(enableHardwareAcceleration: app.opt('hw', 'on') == 'on'));
     stripes = AnimationController(vsync: this, duration: const Duration(seconds: 7))..repeat();
     _subs.add(player.stream.buffering.listen((b) {
       if (mounted) setState(() => buffering = b);
@@ -124,7 +134,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           if (c.id == app.lastChannelId) last = c;
         }
         last ??= app.channels.first;
-        _tune(last);
+        if (app.opt('start', 'last') == 'last') _tune(last);
         final i = list.indexOf(last);
         if (i >= 0) {
           row = i;
@@ -138,7 +148,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _onPlayError(String e) {
     if (playingId == null || !mounted) return;
-    if (!_triedAlt) {
+    if (!_triedAlt && app.opt('fmt', 'auto') == 'auto') {
       _triedAlt = true;
       _open(alt: true);
       return;
@@ -148,7 +158,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   // ---------------------------------------------------------------- helpers
 
-  List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.cats];
+  List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.visibleCats];
 
   Channel? get cur => (row >= 0 && row < list.length) ? list[row] : null;
   Channel? get playing => playingId == null ? null : app.byId[playingId];
@@ -186,6 +196,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   void _setCategory(int i) {
     final cats = allCats;
     catIdx = clampI(i, 0, cats.length - 1);
+    _catId = cats[catIdx].id;
     list = app.listFor(cats[catIdx]);
     final p = list.indexWhere((c) => c.id == playingId);
     row = p >= 0 ? p : 0;
@@ -233,7 +244,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final ch = playing;
     final c = app.client;
     if (ch == null || c == null) return;
-    player.open(Media(c.liveUrl(ch.id, ext: alt ? 'm3u8' : 'ts')));
+    final fmt = app.opt('fmt', 'auto');
+    final ext = fmt == 'hls' ? 'm3u8' : (fmt == 'ts' ? 'ts' : (alt ? 'm3u8' : 'ts'));
+    player.open(Media(c.liveUrl(ch.id, ext: ext)));
   }
 
   void _togglePause() {
@@ -269,7 +282,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   void _showOsd() {
     setState(() => osd = true);
     _osdTimer?.cancel();
-    _osdTimer = Timer(const Duration(milliseconds: 4500), () {
+    _osdTimer = Timer(Duration(seconds: int.tryParse(app.opt('osd', '5')) ?? 5), () {
       if (mounted && !paused) setState(() => osd = false);
     });
   }
@@ -313,13 +326,61 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     ];
   }
 
+  void _cycle(String key, String def, List<String> opts, int d) {
+    final i = opts.indexOf(app.opt(key, def));
+    final n = opts[((i < 0 ? 0 : i) + (d < 0 ? opts.length - 1 : 1)) % opts.length];
+    app.setOpt(key, n);
+  }
+
+  _SetItem _choice(String label, String key, String def, Map<String, String> opts, {String note = ''}) {
+    final v = opts[app.opt(key, def)] ?? opts.values.first;
+    return _SetItem(label, note.isEmpty ? v : '$v  ($note)', (d) => _cycle(key, def, opts.keys.toList(), d));
+  }
+
   List<_SetItem> get _settings {
+    if (setPage == 'groups') {
+      return [
+        _SetItem.header('Show or hide groups  ·  hidden groups also leave All Channels'),
+        for (final c in app.cats)
+          _SetItem(c.name, app.hiddenGroups.contains(c.id) ? 'Hidden' : 'Shown', (d) => app.toggleHidden(c.id)),
+      ];
+    }
     const fxs = ['subtle', 'full', 'off'];
     const fxNames = {'subtle': 'Subtle', 'full': 'Full', 'off': 'Off'};
     final info = app.info;
+    final sh = app.shiftHours;
+    final exp = info?.expires;
     return [
+      _SetItem.header('General'),
+      _choice('When the app opens', 'start', 'last', const {'last': 'Play the last channel', 'guide': 'Show the guide only'}),
       _SetItem('Time format', app.use24 ? '24-hour' : '12-hour', (d) => app.setUse24(!app.use24)),
+      _SetItem.header('Appearance'),
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),
+      _choice('Channel numbers', 'nums', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
+      _choice('Channel logos', 'logos', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
+      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill the box', 'fit': 'Fit (bars)'}),
+      _SetItem.header('TV guide'),
+      _SetItem('Guide time shift', sh == 0 ? 'None' : '${sh > 0 ? '+' : ''}$sh h', (d) {
+        final n = clampI(sh + (d < 0 ? -1 : 1), -12, 12);
+        app.setOpt('shift', '$n');
+      }),
+      _SetItem('Show or hide groups', '${app.hiddenGroups.length} hidden  ›', (d) {
+        setState(() {
+          setPage = 'groups';
+          setIdx = 1;
+        });
+      }, button: true),
+      _SetItem('Reload the TV guide', '', (d) {
+        app.refreshGuide();
+        _toast('TV guide reloading');
+      }, button: true),
+      _SetItem.header('Player'),
+      _choice('Stream format', 'fmt', 'auto', const {'auto': 'Automatic', 'ts': 'MPEG-TS (.ts)', 'hls': 'HLS (.m3u8)'}),
+      _choice('Full-screen picture', 'fsfit', 'fit', const {'fit': 'Fit', 'fill': 'Fill (zoom)', 'stretch': 'Stretch'}),
+      _choice('Info bar stays for', 'osd', '5', const {'3': '3 seconds', '5': '5 seconds', '8': '8 seconds', '15': '15 seconds'}),
+      _choice('Buffer size', 'buf', 'normal', const {'normal': 'Normal', 'large': 'Large', 'xl': 'Extra large'}, note: 'after restart'),
+      _choice('Hardware decoding', 'hw', 'on', const {'on': 'On', 'off': 'Off'}, note: 'after restart'),
+      _SetItem.header('Subscriptions'),
       for (var i = 0; i < app.accounts.length; i++)
         _SetItem(
           i == app.active ? '● ${app.accounts[i].name}' : app.accounts[i].name,
@@ -338,11 +399,22 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _closeSettings();
         _addAccount();
       }, button: true),
+      _SetItem('Reload channels', '', (d) {
+        _closeSettings();
+        app.openAccount(app.active);
+      }, button: true),
       _SetItem('Sign out of ${app.acc?.name ?? ''}', '', (d) {
         _closeSettings();
         player.stop();
         app.removeActive();
       }, button: true),
+      _SetItem.header('Favorites'),
+      _SetItem('Clear favorites', '${app.favs.length} saved', (d) {
+        app.clearFavs();
+        _toast('Favorites cleared');
+      }, button: true),
+      _SetItem.header('About'),
+      _SetItem('Tame Player 0.1', exp == null ? '' : 'Subscription ends ${exp.month}/${exp.day}/${exp.year}', null, button: true),
     ];
   }
 
@@ -364,10 +436,31 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _openSettings() => setState(() {
         area = Area.settings;
-        setIdx = 0;
+        setPage = 'main';
+        setIdx = 1;
       });
 
-  void _closeSettings() => setState(() => area = Area.guide);
+  void _closeSettings() => setState(() {
+        area = Area.guide;
+        setPage = 'main';
+        // groups may have been hidden: stay on the same group if it still exists
+        final keepRow = row;
+        final i = allCats.indexWhere((c) => c.id == _catId);
+        _setCategory(i < 0 ? 0 : i);
+        if (i >= 0 && keepRow < list.length) {
+          row = keepRow;
+          _fixTop();
+        }
+      });
+
+  void _scrollSettings() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _setFocusKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx, alignment: 0.5, duration: const Duration(milliseconds: 150));
+      }
+    });
+  }
 
   // ---------------------------------------------------------------- input
 
@@ -575,22 +668,40 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _settingsAct(String a) {
     final items = _settings;
+    if (items.isEmpty) return;
     switch (a) {
       case 'up':
       case 'down':
-        setState(() => setIdx = (setIdx + (a == 'up' ? -1 : 1) + items.length) % items.length);
+        {
+          final d = a == 'up' ? -1 : 1;
+          var i = clampI(setIdx, 0, items.length - 1);
+          for (var n = 0; n < items.length; n++) {
+            i = (i + d + items.length) % items.length;
+            if (!items[i].header) break;
+          }
+          setState(() => setIdx = i);
+          _scrollSettings();
+        }
       case 'left':
       case 'right':
       case 'ok':
         {
           final s = items[clampI(setIdx, 0, items.length - 1)];
+          if (s.header || s.change == null) return;
           if (s.button && a != 'ok') return;
-          s.change(a == 'left' ? -1 : 1);
+          s.change!(a == 'left' ? -1 : 1);
           setState(() {});
         }
       case 'back':
       case 'menu':
-        _closeSettings();
+        if (setPage != 'main') {
+          setState(() {
+            setPage = 'main';
+            setIdx = 1;
+          });
+        } else {
+          _closeSettings();
+        }
     }
   }
 
@@ -964,13 +1075,18 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         ),
         padding: const EdgeInsets.only(left: 4, right: 12),
         child: Row(children: [
-          SizedBox(
-            width: 40,
-            child: Text('${ch.num}', textAlign: TextAlign.right, style: ts(15, w: FontWeight.w600, c: const Color(0xFFB3C3D4))),
-          ),
-          const SizedBox(width: 10),
-          ChannelBadge(ch: ch),
-          const SizedBox(width: 10),
+          if (app.opt('nums', 'on') == 'on') ...[
+            SizedBox(
+              width: 40,
+              child: Text('${ch.num}', textAlign: TextAlign.right, style: ts(15, w: FontWeight.w600, c: const Color(0xFFB3C3D4))),
+            ),
+            const SizedBox(width: 10),
+          ] else
+            const SizedBox(width: 10),
+          if (app.opt('logos', 'on') == 'on') ...[
+            ChannelBadge(ch: ch),
+            const SizedBox(width: 10),
+          ],
           Expanded(
             child: Text(ch.name, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: ts(17, w: FontWeight.w600)),
           ),
@@ -1109,7 +1225,14 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           child: ClipRRect(
             borderRadius: BorderRadius.circular(full ? 0 : 12),
             child: Stack(fit: StackFit.expand, children: [
-              Video(controller: vc, controls: NoVideoControls, fill: Colors.black),
+              Video(
+                controller: vc,
+                controls: NoVideoControls,
+                fill: Colors.black,
+                fit: full
+                    ? const {'fill': BoxFit.cover, 'stretch': BoxFit.fill}[app.opt('fsfit', 'fit')] ?? BoxFit.contain
+                    : (app.opt('pvfit', 'fill') == 'fill' ? BoxFit.cover : BoxFit.contain),
+              ),
               if (ch == null)
                 Center(
                   child: Text('Press OK on a show to start watching',
@@ -1270,7 +1393,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   Widget _settingsPanel() {
     final items = _settings;
-    final idx = clampI(setIdx, 0, items.length - 1);
+    final idx = clampI(setIdx, 0, items.isEmpty ? 0 : items.length - 1);
     return Positioned.fill(
       child: GestureDetector(
         onTap: _closeSettings,
@@ -1280,39 +1403,60 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           child: GestureDetector(
             onTap: () {},
             child: Container(
-              width: 700,
-              padding: const EdgeInsets.only(top: 28, bottom: 18),
+              width: 760,
+              height: 640,
+              padding: const EdgeInsets.only(top: 24, bottom: 14),
               decoration: BoxDecoration(
                 color: const Color(0xFF1F3A5D),
                 borderRadius: BorderRadius.circular(18),
                 border: Border.all(color: const Color(0x29C9D2DC)),
                 boxShadow: const [BoxShadow(color: Color(0xB3000000), blurRadius: 80, offset: Offset(0, 30))],
               ),
-              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(30, 0, 30, 14),
-                  child: Text('Settings', style: ts(26, w: FontWeight.w800)),
+                  padding: const EdgeInsets.fromLTRB(30, 0, 30, 10),
+                  child: Text(setPage == 'groups' ? 'Settings › Groups' : 'Settings', style: ts(26, w: FontWeight.w800)),
                 ),
-                for (var i = 0; i < items.length; i++)
-                  LiftItem(
-                    focused: i == idx,
-                    fx: app.fx,
-                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-                    onTap: () {
-                      setState(() => setIdx = i);
-                      _act('ok');
-                    },
-                    child: Row(children: [
-                      Expanded(child: Text(items[i].label, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(19, c: i == idx ? TP.ink : TP.text))),
-                      Text(
-                        items[i].button ? items[i].value : '‹  ${items[i].value}  ›',
-                        style: ts(17, c: i == idx ? const Color(0xFF22364B) : const Color(0xFFB8C8D8)),
-                      ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                      for (var i = 0; i < items.length; i++)
+                        if (items[i].header)
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(30, 16, 30, 6),
+                            child: Text(items[i].label.toUpperCase(),
+                                style: ts(13, w: FontWeight.w800, c: TP.orange).copyWith(letterSpacing: 1.2)),
+                          )
+                        else
+                          LiftItem(
+                            key: i == idx ? _setFocusKey : null,
+                            focused: i == idx,
+                            fx: app.fx,
+                            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 13),
+                            onTap: () {
+                              setState(() => setIdx = i);
+                              _act('ok');
+                            },
+                            child: Row(children: [
+                              Expanded(
+                                child: Text(items[i].label,
+                                    maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: i == idx ? const Color(0xFF050B14) : TP.text)),
+                              ),
+                              Text(
+                                items[i].button || items[i].value.isEmpty ? items[i].value : '‹  ${items[i].value}  ›',
+                                style: ts(16, w: i == idx ? FontWeight.w600 : FontWeight.w400, c: i == idx ? const Color(0xFF1B2B3D) : const Color(0xFFB8C8D8)),
+                              ),
+                            ]),
+                          ),
                     ]),
                   ),
+                ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(30, 12, 30, 0),
-                  child: Text('◀ ▶ or OK to change · BACK to close', style: ts(14, c: const Color(0xFFA5B6C8))),
+                  padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
+                  child: Text(
+                    setPage == 'groups' ? 'OK to show / hide · BACK to go back' : '▲▼ move · ◀ ▶ or OK to change · BACK to close',
+                    style: ts(14, c: const Color(0xFFA5B6C8)),
+                  ),
                 ),
               ]),
             ),
