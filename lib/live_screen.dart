@@ -15,7 +15,7 @@ import 'updater.dart';
 import 'widgets.dart';
 import 'xtream.dart';
 
-enum Area { guide, menu, full, settings, dialog, input }
+enum Area { guide, menu, full, settings, dialog, input, side }
 
 const double kRowH = 58, kChW = 300;
 const double kPxPerMin = 980 / 150; // 30 minutes = 196 px
@@ -81,6 +81,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   VoidCallback? _dlgYesAct;
   Area _dlgFrom = Area.guide;
   Program? _optProg;
+  int? _prevId;
+  int sideIdx = 0;
   String setPage = 'main';
   double sw = 1280, sh = 720; // stage size: always fills the window exactly
   int get rows => clampI(((sh - 300 - 36 - 30) / kRowH).floor(), 3, 30);
@@ -250,10 +252,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   // ---------------------------------------------------------------- helpers
 
-  List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.visibleCats];
+  List<ChannelGroup> get allCats => [
+        const ChannelGroup('__all', 'All Channels'),
+        const ChannelGroup('__fav', 'Favorites'),
+        const ChannelGroup('__recent', 'Recently watched'),
+        ...app.visibleCats,
+      ];
 
   bool get _isFull =>
       area == Area.full ||
+      area == Area.side ||
       ((area == Area.settings || area == Area.input) && _panelFrom == Area.full) ||
       (area == Area.dialog && _dlgFrom == Area.full);
 
@@ -331,6 +339,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     }
     _retries = 0;
     _retryTimer?.cancel();
+    if (playingId != null && playingId != ch.id) _prevId = playingId;
     setState(() {
       playingId = ch.id;
       playError = null;
@@ -583,6 +592,24 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             }, button: true),
           ];
         }
+      case 'reminders':
+        return [
+          _SetItem.header(app.reminders.isEmpty ? 'No reminders set' : 'OK to cancel a reminder'),
+          for (var i = 0; i < app.reminders.length; i++)
+            _SetItem(
+              '${app.reminders[i]['title']}',
+              () {
+                final t = DateTime.fromMillisecondsSinceEpoch(app.reminders[i]['start'] as int);
+                final c = app.byId[app.reminders[i]['ch']];
+                return '${_dayName(t)} ${fmt(t)}${c == null ? '' : ' · ${app.nameOf(c)}'}';
+              }(),
+              (d) {
+                app.removeReminderAt(i);
+                _toast('Reminder cancelled');
+              },
+              button: true,
+            ),
+        ];
       case 'hiddench':
         {
           final hidden = [for (final id in app.hiddenCh) if (app.byId[id] != null) app.byId[id]!];
@@ -738,6 +765,17 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             _askPin(go);
           }
         }, button: true),
+      _SetItem.header('Reminders'),
+      _choice('Remind me', 'remindlead', '1',
+          const {'1': 'When the show starts', '2': '2 minutes before', '5': '5 minutes before', '10': '10 minutes before'}),
+      _SetItem('Upcoming reminders', '${app.reminders.length}  ›', (d) => setState(() {
+            setPage = 'reminders';
+            setIdx = 1;
+          }), button: true),
+      _SetItem('Clear recently watched', '${app.recent.length} channels', (d) {
+        app.clearRecent();
+        _toast('Recently watched cleared');
+      }, button: true),
       _SetItem.header('Favorites'),
       _SetItem('Clear favorites', '${app.favs.length} saved', (d) {
         app.clearFavs();
@@ -1022,6 +1060,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       a = 'menu';
     } else if (k == LogicalKeyboardKey.keyF) {
       a = 'fav';
+    } else if (k == LogicalKeyboardKey.mediaRewind || k == LogicalKeyboardKey.comma) {
+      a = 'rw';
+    } else if (k == LogicalKeyboardKey.mediaFastForward || k == LogicalKeyboardKey.period) {
+      a = 'ff';
     } else if (k == LogicalKeyboardKey.pageUp || k == LogicalKeyboardKey.channelUp) {
       a = 'pgup';
     } else if (k == LogicalKeyboardKey.pageDown || k == LogicalKeyboardKey.channelDown) {
@@ -1065,6 +1107,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _dialogAct(a);
       case Area.input:
         if (a == 'back') _closeInput();
+      case Area.side:
+        _sideAct(a);
     }
   }
 
@@ -1101,9 +1145,20 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           cursor = p.end;
           _ensureVis();
         }
+      case 'rw':
+      case 'ff':
+        if (list.isEmpty) return;
+        row = clampI(row + (a == 'rw' ? -rows : rows), 0, list.length - 1);
+        _fixTop();
       case 'left':
         {
           if (ch == null) return _openMenu();
+          if (win.isAfter(floor30(now).add(const Duration(minutes: 30)))) {
+            // far ahead in the guide: one press brings you straight back to now
+            cursor = now;
+            win = floor30(now);
+            break;
+          }
           final p = app.progAt(ch, cursor);
           if (!p.start.isAfter(now)) return _openMenu(); // already on the show that's on now
           final pr = app.progAt(ch, p.start.subtract(const Duration(seconds: 1)));
@@ -1203,9 +1258,148 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       case 'menu':
       case 'long':
         _openPanel('player', ch: playing);
+      case 'right':
+        {
+          final prev = _prevId == null ? null : app.byId[_prevId];
+          if (prev == null) {
+            _toast('No previous channel yet');
+            return;
+          }
+          _tune(prev);
+          final i = list.indexWhere((c) => c.id == prev.id);
+          if (i >= 0) row = i;
+          _showOsd();
+        }
+      case 'left':
+        {
+          final i = list.indexWhere((c) => c.id == playingId);
+          setState(() {
+            sideIdx = i < 0 ? 0 : i;
+            area = Area.side;
+            osd = false;
+          });
+        }
       default:
         _showOsd();
     }
+  }
+
+  void _sideAct(String a) {
+    if (list.isEmpty) {
+      setState(() => area = Area.full);
+      return;
+    }
+    switch (a) {
+      case 'up':
+      case 'down':
+        setState(() => sideIdx = (sideIdx + (a == 'up' ? -1 : 1) + list.length) % list.length);
+      case 'pgup':
+      case 'pgdn':
+      case 'rw':
+      case 'ff':
+        setState(() => sideIdx = clampI(sideIdx + ((a == 'pgup' || a == 'rw') ? -8 : 8), 0, list.length - 1));
+      case 'ok':
+        {
+          final ch = list[clampI(sideIdx, 0, list.length - 1)];
+          if (ch.id == playingId) {
+            setState(() => area = Area.full);
+            _showOsd();
+          } else {
+            _tune(ch);
+            row = sideIdx;
+          }
+        }
+      case 'fav':
+        _toggleFav(list[clampI(sideIdx, 0, list.length - 1)]);
+      case 'right':
+      case 'back':
+        setState(() => area = Area.full);
+      case 'long':
+      case 'menu':
+        _openPanel('channel', ch: list[clampI(sideIdx, 0, list.length - 1)]);
+    }
+  }
+
+  Widget _sideGuide() {
+    final now = DateTime.now();
+    const rh = 66.0;
+    final visible = ((sh - 110) / rh).floor();
+    final maxStart = list.length - visible;
+    final start = clampI(sideIdx - visible ~/ 2, 0, maxStart < 0 ? 0 : maxStart);
+    final cats = allCats;
+    return Positioned(
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: 600,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 1, end: 0),
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        builder: (context, v, child) => Transform.translate(offset: Offset(-600 * v, 0), child: child),
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(colors: [Color(0xF2152B47), Color(0xE61D3758), Color(0x001D3758)], stops: [0, 0.82, 1]),
+          ),
+          padding: const EdgeInsets.fromLTRB(0, 24, 40, 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(26, 0, 0, 12),
+              child: Text(cats[clampI(catIdx, 0, cats.length - 1)].name.toUpperCase(),
+                  style: ts(15, w: FontWeight.w800, c: TP.orange).copyWith(letterSpacing: 1.1)),
+            ),
+            for (var i = start; i < list.length && i < start + visible; i++)
+              SizedBox(
+                height: rh,
+                child: Builder(builder: (context) {
+                  final ch = list[i];
+                  final p = app.progAt(ch, now);
+                  final f = i == sideIdx;
+                  return LiftItem(
+                    focused: f,
+                    fx: app.fx,
+                    padding: const EdgeInsets.fromLTRB(14, 8, 16, 8),
+                    onTap: () {
+                      setState(() => sideIdx = i);
+                      _sideAct('ok');
+                    },
+                    child: Row(children: [
+                      Container(width: 4, height: 40, color: ch.id == playingId ? TP.orange : Colors.transparent),
+                      const SizedBox(width: 8),
+                      SizedBox(
+                        width: 44,
+                        child: Text('${ch.num}',
+                            textAlign: TextAlign.right, style: ts(15, w: FontWeight.w600, c: f ? const Color(0xFF33475C) : TP.dim)),
+                      ),
+                      const SizedBox(width: 10),
+                      ChannelBadge(ch: ch, w: 50, h: 34, fontSize: 12),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+                          Text(app.nameOf(ch),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: ts(17, w: FontWeight.w700, c: f ? const Color(0xFF050B14) : TP.text)),
+                          Text(p.title,
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(14, c: f ? const Color(0xFF1B2B3D) : TP.dim2)),
+                          const SizedBox(height: 4),
+                          progressBar(220, progress(p, now)),
+                        ]),
+                      ),
+                      if (app.favs.contains(ch.id)) const FavHeart(on: true, size: 16),
+                    ]),
+                  );
+                }),
+              ),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.only(left: 26),
+              child: Text('▲▼ browse · OK watch · ▶ or BACK close · hold OK for options', style: ts(13, c: TP.dim)),
+            ),
+          ]),
+        ),
+      ),
+    );
   }
 
   void _settingsAct(String a) {
@@ -1236,7 +1430,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         }
       case 'back':
       case 'menu':
-        if (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks') {
+        if (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks' || setPage == 'reminders') {
           setState(() {
             setPage = 'main';
             setIdx = 1;
@@ -1276,7 +1470,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _checkReminders() {
     if (area != Area.guide && area != Area.full) return;
-    final due = app.dueReminders();
+    final due = app.dueReminders(leadMinutes: int.tryParse(app.opt('remindlead', '1')) ?? 1);
     if (due.isEmpty) return;
     final r = due.first;
     final ch = app.byId[r['ch']];
@@ -1377,6 +1571,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           if (area == Area.settings) _settingsPanel(),
           if (area == Area.dialog) _dialog(),
           if (area == Area.input) _inputPanel(),
+          if (area == Area.side) _sideGuide(),
           if (list.isEmpty && (app.loading || app.error != null)) _loadingPanel(),
           _toastWidget(),
         ]),
@@ -2035,6 +2230,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                           'channel': 'Channel options',
                           'player': 'Player options',
                           'show': 'Show details',
+                          'reminders': 'Settings › Reminders',
                         }[setPage] ??
                         'Settings',
                     style: ts(26, w: FontWeight.w800),
@@ -2082,7 +2278,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                 Padding(
                   padding: const EdgeInsets.fromLTRB(30, 10, 30, 0),
                   child: Text(
-                    (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks')
+                    (setPage == 'groups' || setPage == 'hiddench' || setPage == 'locks' || setPage == 'reminders')
                         ? 'OK to change · BACK to go back'
                         : '▲▼ move · ◀ ▶ or OK to change · BACK to close',
                     style: ts(14, c: const Color(0xFFA5B6C8)),

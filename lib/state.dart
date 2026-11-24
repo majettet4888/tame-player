@@ -50,6 +50,7 @@ class AppState extends ChangeNotifier {
   Map<int, String> renames = {};
   Set<String> lockedGroups = {};
   List<Map<String, dynamic>> reminders = []; // {ch, start, title}
+  List<int> recent = [];
   int? lastChannelId;
   bool use24 = false;
   String fx = 'subtle';
@@ -120,6 +121,7 @@ class AppState extends ChangeNotifier {
       catCounts = counts;
       favs = {for (final s in _prefs.getStringList('favs_${a.key}') ?? const <String>[]) int.tryParse(s) ?? -1}..remove(-1);
       lastChannelId = _prefs.getInt('last_${a.key}');
+      recent = [for (final x in _prefs.getStringList('recent_${a.key}') ?? const <String>[]) int.tryParse(x) ?? -1]..remove(-1);
       hiddenGroups = (_prefs.getStringList('hidden_${a.key}') ?? const <String>[]).toSet();
       hiddenCh = {for (final x in _prefs.getStringList('hiddench_${a.key}') ?? const <String>[]) int.tryParse(x) ?? -1}..remove(-1);
       lockedGroups = (_prefs.getStringList('locks_${a.key}') ?? const <String>[]).toSet();
@@ -245,14 +247,20 @@ class AppState extends ChangeNotifier {
   }
 
   /// Reminders whose show starts within a minute (removed once handed out).
-  List<Map<String, dynamic>> dueReminders() {
+  List<Map<String, dynamic>> dueReminders({int leadMinutes = 1}) {
     final now = DateTime.now().millisecondsSinceEpoch;
-    final due = reminders.where((r) => (r['start'] as int) <= now + 60000).toList();
+    final lead = leadMinutes * 60000;
+    final due = reminders.where((r) => (r['start'] as int) <= now + lead).toList();
     if (due.isNotEmpty) {
-      reminders.removeWhere((r) => (r['start'] as int) <= now + 60000);
+      reminders.removeWhere((r) => (r['start'] as int) <= now + lead);
       _saveReminders();
     }
     return due.where((r) => (r['start'] as int) > now - 10 * 60000).toList(); // skip very old ones
+  }
+
+  void removeReminderAt(int i) {
+    if (i >= 0 && i < reminders.length) reminders.removeAt(i);
+    _saveReminders();
   }
 
   void _saveReminders() {
@@ -280,6 +288,7 @@ class AppState extends ChangeNotifier {
       return channels.where((x) => !hiddenGroups.contains(x.catId)).length;
     }
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).length;
+    if (c.id == '__recent') return recent.where((id) => byId.containsKey(id)).length;
     return catCounts[c.id] ?? 0;
   }
 
@@ -289,6 +298,7 @@ class AppState extends ChangeNotifier {
       return channels.where((x) => !hiddenGroups.contains(x.catId) && !hiddenCh.contains(x.id)).toList();
     }
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).toList();
+    if (c.id == '__recent') return [for (final id in recent) if (byId[id] != null && !hiddenCh.contains(id)) byId[id]!];
     return channels.where((x) => x.catId == c.id && !hiddenCh.contains(x.id)).toList();
   }
 
@@ -301,8 +311,21 @@ class AppState extends ChangeNotifier {
 
   void setLast(int id) {
     lastChannelId = id;
+    recent.remove(id);
+    recent.insert(0, id);
+    if (recent.length > 15) recent = recent.sublist(0, 15);
     final a = acc;
-    if (a != null) _prefs.setInt('last_${a.key}', id);
+    if (a != null) {
+      _prefs.setInt('last_${a.key}', id);
+      _prefs.setStringList('recent_${a.key}', [for (final x in recent) '$x']);
+    }
+  }
+
+  void clearRecent() {
+    recent = [];
+    final a = acc;
+    if (a != null) _prefs.setStringList('recent_${a.key}', const []);
+    notifyListeners();
   }
 
   void setUse24(bool v) {
