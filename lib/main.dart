@@ -104,12 +104,7 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
                     child: Column(mainAxisSize: MainAxisSize.min, children: [
                       Transform.scale(
                         scale: scale,
-                        child: Container(
-                          decoration: BoxDecoration(boxShadow: [
-                            BoxShadow(color: TP.orange.withAlpha((90 * pop).round()), blurRadius: 60, spreadRadius: 4),
-                          ]),
-                          child: Image.asset('assets/logo.png', width: 200),
-                        ),
+                        child: Image.asset('assets/logo.png', width: 200),
                       ),
                       const SizedBox(height: 26),
                       Opacity(
