@@ -647,7 +647,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         autofocus: true,
         onKeyEvent: _onKey,
         child: Container(
-          color: Colors.black,
+          decoration: TP.background,
           child: Center(
             child: FittedBox(
               fit: BoxFit.contain,
@@ -778,6 +778,24 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         rows.add(w);
       }
     }
+    final showNowLine = !now.isBefore(win) && now.isBefore(we);
+    if (showNowLine) {
+      final x = kChW + now.difference(win).inSeconds / 60 * kPxPerMin - 1;
+      rows.add(Positioned(
+        left: x,
+        top: 0,
+        width: 2,
+        height: kRowH * kRows,
+        child: IgnorePointer(
+          child: Container(
+            decoration: const BoxDecoration(
+              color: Color(0xFFF0962F),
+              boxShadow: [BoxShadow(color: Color(0xFFF0962F), blurRadius: 10)],
+            ),
+          ),
+        ),
+      ));
+    }
     if (focusedRow != null) rows.add(focusedRow);
     if (list.isNotEmpty) app.ensureEpg(list.skip(top).take(kRows * 2));
 
@@ -877,21 +895,6 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
               ),
             ),
           ),
-          if (showNow)
-            Positioned(
-              left: nowX,
-              top: 36,
-              bottom: 0,
-              width: 2,
-              child: IgnorePointer(
-                child: Container(
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFF0962F),
-                    boxShadow: [BoxShadow(color: Color(0xFFF0962F), blurRadius: 10)],
-                  ),
-                ),
-              ),
-            ),
           if (showNow)
             Positioned(
               left: nowX - 4,
