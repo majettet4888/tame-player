@@ -169,6 +169,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     _osdTimer?.cancel();
     _toastTimer?.cancel();
     _retryTimer?.cancel();
+    _remTimer?.cancel();
     _inputCtl.dispose();
     _inputFocus.dispose();
     stripes.dispose();
@@ -573,6 +574,23 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             _closeSettings();
             _tune(ch);
           }, button: true),
+          ...() {
+            final now = DateTime.now();
+            final base = _optProg ?? app.progAt(ch, now);
+            // a show that's already on → offer the next one
+            var target = base.start.isAfter(now) ? base : app.progAt(ch, base.end);
+            if (target.placeholder || !target.start.isAfter(now)) return <_SetItem>[];
+            final has = app.hasReminder(ch, target);
+            final t = target;
+            return [
+              _SetItem(has ? 'Cancel reminder' : 'Remind me', '${t.title} · ${_dayName(t.start)} ${fmt(t.start)}', (d) {
+                app.toggleReminder(ch, t);
+                _closeSettings();
+                _toast(has ? 'Reminder cancelled' : '★ I\'ll remind you about ${t.title}');
+              }, button: true),
+            ];
+          }(),
+          _SetItem('Record', 'coming soon', (d) => _toast('Recording is coming in a future update'), button: true),
           _SetItem(fav ? 'Remove from Favorites' : 'Add to Favorites', fav ? '♥' : '♡', (d) => _toggleFav(ch), button: true),
           _SetItem('Rename this channel', app.renames.containsKey(ch.id) ? 'renamed' : '', (d) {
             setState(() => area = Area.guide);
@@ -706,7 +724,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),
       _choice('Channel numbers', 'nums', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
       _choice('Channel logos', 'logos', 'on', const {'on': 'Shown', 'off': 'Hidden'}),
-      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill', 'fit': 'Fit'}),
+      _choice('Preview picture', 'pvfit', 'fill', const {'fill': 'Fill', 'zoom': 'Zoom', 'fit': 'Fit'}),
       _SetItem.header('TV guide'),
       _SetItem('Guide time shift', sh == 0 ? 'None' : '${sh > 0 ? '+' : ''}$sh h', (d) {
         final n = clampI(sh + (d < 0 ? -1 : 1), -12, 12);
@@ -816,6 +834,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       _SetItem.header('Reminders'),
       _choice('Remind me', 'remindlead', '1',
           const {'1': 'At start', '2': '2 min early', '5': '5 min early', '10': '10 min early'}),
+      _choice('When a reminder goes off', 'remindauto', 'switch', const {'switch': 'Switch to it', 'ask': 'Just remind me'}),
       _SetItem('Upcoming reminders', '${app.reminders.length}  ›', (d) => setState(() {
             setPage = 'reminders';
             setIdx = 1;
@@ -868,7 +887,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         setIdx = 1;
       });
 
-  void _openPanel(String page, {Channel? ch}) => setState(() {
+  void _openPanel(String page, {Channel? ch, Program? prog}) => setState(() {
+        if (page == 'channel') _optProg = prog;
         _panelFrom = area == Area.full ? Area.full : Area.guide;
         _optCh = ch;
         area = Area.settings;
@@ -1129,6 +1149,14 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   }
 
   void _act(String a) {
+    if (_remCh != null && (a == 'ok' || a == 'back')) {
+      if (a == 'ok') {
+        _remindGo();
+      } else {
+        _remindCancel();
+      }
+      return;
+    }
     if (a == 'back') {
       final now = DateTime.now();
       if (now.difference(_lastBack).inMilliseconds < 250) return; // same press reported twice
@@ -1230,7 +1258,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       case 'menu':
         return _openMenu();
       case 'long':
-        if (ch != null) _openPanel('channel', ch: ch);
+        if (ch != null) _openPanel('channel', ch: ch, prog: app.progAt(ch, cursor));
         return;
       case 'search':
         return _openInput('search');
@@ -1526,22 +1554,139 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     }
   }
 
+  // reminder card (top-right, counts down, then switches unless cancelled)
+  Channel? _remCh;
+  String _remTitle = '';
+  int _remTotal = 0, _remLeft = 0;
+  Timer? _remTimer;
+
   void _checkReminders() {
-    if (area != Area.guide && area != Area.full) return;
+    if (_remCh != null) return;
     final due = app.dueReminders(leadMinutes: int.tryParse(app.opt('remindlead', '1')) ?? 1);
     if (due.isEmpty) return;
     final r = due.first;
     final ch = app.byId[r['ch']];
     if (ch == null) return;
-    _showDialog('Starting now: ${r['title']}', 'on ${ch.num} · ${app.nameOf(ch)}', 'Not now', 'Watch', () {
-      _tune(ch);
-      final i = list.indexWhere((c) => c.id == ch.id);
-      if (i >= 0) {
-        row = i;
-        _fixTop();
+    final secsToStart = ((r['start'] as int) - DateTime.now().millisecondsSinceEpoch) ~/ 1000;
+    setState(() {
+      _remCh = ch;
+      _remTitle = '${r['title']}';
+      _remTotal = secsToStart < 20 ? 20 : secsToStart;
+      _remLeft = _remTotal;
+    });
+    _remTimer?.cancel();
+    _remTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _remLeft--);
+      if (_remLeft <= 0) {
+        if (app.opt('remindauto', 'switch') == 'switch') {
+          _remindGo();
+        } else if (_remLeft <= -60) {
+          _remindCancel();
+        }
       }
-      _goFull();
-    }, start: 1);
+    });
+  }
+
+  void _remindGo() {
+    final ch = _remCh;
+    _remindCancel();
+    if (ch == null) return;
+    _tune(ch);
+    final i = list.indexWhere((c) => c.id == ch.id);
+    if (i >= 0) {
+      row = i;
+      _fixTop();
+    }
+    if (area == Area.guide || area == Area.full) _goFull();
+  }
+
+  void _remindCancel() {
+    _remTimer?.cancel();
+    if (mounted) setState(() => _remCh = null);
+  }
+
+  Widget _reminderCard() {
+    final ch = _remCh!;
+    final secs = _remLeft < 0 ? 0 : _remLeft;
+    final auto = app.opt('remindauto', 'switch') == 'switch';
+    final when = secs >= 60 ? '${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}' : '${secs}s';
+    Widget chip(String k, String label, VoidCallback onTap) => GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            decoration: BoxDecoration(color: const Color(0x33FFFFFF), borderRadius: BorderRadius.circular(9)),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Text(k, style: ts(12, w: FontWeight.w800, c: TP.orangeLight)),
+              const SizedBox(width: 6),
+              Text(label, style: ts(14, w: FontWeight.w700, c: Colors.white)),
+            ]),
+          ),
+        );
+    return Positioned(
+      top: 24,
+      right: 24,
+      width: 440,
+      child: TweenAnimationBuilder<double>(
+        tween: Tween(begin: 1, end: 0),
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutBack,
+        builder: (context, v, child) => Transform.translate(offset: Offset(0, -40 * v), child: Opacity(opacity: 1 - v.clamp(0.0, 1.0), child: child)),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+            child: Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0x59FFFFFF)),
+                gradient: const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xCC24476F), Color(0xCC152B47)],
+                ),
+                boxShadow: const [BoxShadow(color: Color(0x80000000), blurRadius: 30, offset: Offset(0, 14))],
+              ),
+              child: Row(children: [
+                SizedBox(
+                  width: 64,
+                  height: 64,
+                  child: Stack(alignment: Alignment.center, children: [
+                    SizedBox(
+                      width: 64,
+                      height: 64,
+                      child: CircularProgressIndicator(
+                        value: _remTotal <= 0 ? 0 : (secs / _remTotal).clamp(0.0, 1.0).toDouble(),
+                        strokeWidth: 5,
+                        color: TP.orange,
+                        backgroundColor: const Color(0x33FFFFFF),
+                      ),
+                    ),
+                    Text(when, style: ts(15, w: FontWeight.w800, c: Colors.white)),
+                  ]),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                    Text(secs > 0 ? 'Coming up' : 'Starting now', style: ts(13, w: FontWeight.w800, c: TP.orangeLight)),
+                    Text(_remTitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(19, w: FontWeight.w800, c: Colors.white)),
+                    Text('${ch.num} · ${app.nameOf(ch)}${auto ? '  ·  switching automatically' : ''}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(14, c: TP.dim2)),
+                    const SizedBox(height: 10),
+                    Row(children: [
+                      chip('OK', 'Watch now', _remindGo),
+                      const SizedBox(width: 10),
+                      chip('BACK', 'Cancel', _remindCancel),
+                    ]),
+                  ]),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _openShow(Channel ch, Program p) {
@@ -1634,6 +1779,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           if (area == Area.input) _inputPanel(),
           if (area == Area.side) _sideGuide(),
           if (list.isEmpty && (app.loading || app.error != null)) _loadingPanel(),
+          if (_remCh != null) _reminderCard(),
           _toastWidget(),
         ]),
       ),
@@ -2108,13 +2254,17 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           child: ClipRRect(
             borderRadius: BorderRadius.circular(full ? 0 : 12),
             child: Stack(fit: StackFit.expand, children: [
-              Video(
-                controller: vc,
-                controls: NoVideoControls,
-                fill: Colors.black,
-                fit: full
-                    ? const {'fill': BoxFit.cover, 'stretch': BoxFit.fill}[app.opt('fsfit', 'fit')] ?? BoxFit.contain
-                    : (app.opt('pvfit', 'fill') == 'fill' ? BoxFit.cover : BoxFit.contain),
+              Transform.scale(
+                // "Zoom" hides black bars that are built into widescreen movies
+                scale: !full && app.opt('pvfit', 'fill') == 'zoom' ? 1.34 : 1,
+                child: Video(
+                  controller: vc,
+                  controls: NoVideoControls,
+                  fill: Colors.black,
+                  fit: full
+                      ? const {'fill': BoxFit.cover, 'stretch': BoxFit.fill}[app.opt('fsfit', 'fit')] ?? BoxFit.contain
+                      : (app.opt('pvfit', 'fill') == 'fit' ? BoxFit.contain : BoxFit.cover),
+                ),
               ),
               if (ch == null)
                 Center(
