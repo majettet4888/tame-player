@@ -82,11 +82,13 @@ class _IntroGateState extends State<IntroGate> with SingleTickerProviderStateMix
   Future<void> _playSound() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      if ((prefs.getString('opt_introsound') ?? 'on') != 'on') return;
+      var which = prefs.getString('opt_introsound') ?? 'cinematic';
+      if (which == 'off') return;
+      if (which != 'streaming') which = 'cinematic';
       final p = Player();
       _sound = p;
       await p.setVolume(80);
-      await p.open(Media('asset:///assets/intro.wav'));
+      await p.open(Media('asset:///assets/intro_$which.wav'));
       Future.delayed(const Duration(seconds: 4), () {
         p.dispose();
         if (identical(_sound, p)) _sound = null;

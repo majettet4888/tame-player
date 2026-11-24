@@ -574,7 +574,15 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     return [
       _SetItem.header('General'),
       _choice('When the app opens', 'start', 'last', const {'last': 'Play the last channel', 'guide': 'Show the guide only'}),
-      _choice('Intro sound', 'introsound', 'on', const {'on': 'On', 'off': 'Off'}),
+      _SetItem('Intro sound', const {'streaming': 'Streaming', 'off': 'Off'}[app.opt('introsound', 'cinematic')] ?? 'Cinematic', (d) {
+        _cycle('introsound', 'cinematic', const ['cinematic', 'streaming', 'off'], d);
+        final w = app.opt('introsound', 'cinematic');
+        if (w != 'off') {
+          final p = Player();
+          p.open(Media('asset:///assets/intro_$w.wav'));
+          Future.delayed(const Duration(seconds: 4), p.dispose);
+        }
+      }),
       _SetItem('Time format', app.use24 ? '24-hour' : '12-hour', (d) => app.setUse24(!app.use24)),
       _SetItem.header('Appearance'),
       _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),

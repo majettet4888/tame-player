@@ -20,4 +20,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
-    - assets/intro.wav
+    - assets/intro_cinematic.wav
+    - assets/intro_streaming.wav
