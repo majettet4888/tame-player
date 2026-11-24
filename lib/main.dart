@@ -80,14 +80,14 @@ class _IntroGateState extends State<IntroGate> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    c = AnimationController(vsync: this, duration: const Duration(milliseconds: 7000));
+    c = AnimationController(vsync: this, duration: const Duration(milliseconds: 10000));
     lights = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat();
     _run();
     _playSound();
   }
 
   Future<void> _run() async {
-    await c.animateTo(0.82);
+    await c.animateTo(0.86);
     // hold on the logo until the channels have loaded (up to 12 more seconds)
     final until = DateTime.now().add(const Duration(seconds: 12));
     while (mounted && (!widget.app.ready || widget.app.loading) && DateTime.now().isBefore(until)) {
@@ -153,11 +153,12 @@ class _IntroGateState extends State<IntroGate> with TickerProviderStateMixin {
               final t = c.value;
               final l = lights.value * 2 * math.pi;
               // 0–0.1 lights · 0.05–0.2 logo pops · 0.22–0.3 name · hold · 0.82–1 logo grows, then everything fades
-              final inT = _c01(t / 0.1);
-              final pop = Curves.easeOutBack.transform(_c01((t - 0.05) / 0.15));
-              final nameIn = _c01((t - 0.22) / 0.08);
-              final grow = Curves.easeIn.transform(_c01((t - 0.82) / 0.18));
-              final out = Curves.easeIn.transform(_c01((t - 0.93) / 0.07)); // the screen only uncovers at the very end
+              // 10 s: lights 0–0.8 s · logo pops 0.4–1.4 s · name 1.6–2.2 s · hold · logo grows 8.6–10 s · fades in the last 0.5 s
+              final inT = _c01(t / 0.08);
+              final pop = Curves.easeOutBack.transform(_c01((t - 0.04) / 0.1));
+              final nameIn = _c01((t - 0.16) / 0.06);
+              final grow = Curves.easeIn.transform(_c01((t - 0.86) / 0.14));
+              final out = Curves.easeIn.transform(_c01((t - 0.95) / 0.05)); // the screen only uncovers at the very end
               final scale = (0.35 + 0.65 * pop) * (1 + 0.04 * math.sin(l * 2) * (1 - grow)) + 1.6 * grow;
               return IgnorePointer(
                 child: Opacity(
