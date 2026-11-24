@@ -1,0 +1,1475 @@
+import 'dart:async';
+import 'dart:io' show Platform, exit;
+import 'dart:ui' show ImageFilter;
+
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
+
+import 'login_screen.dart';
+import 'state.dart';
+import 'theme.dart';
+import 'widgets.dart';
+import 'xtream.dart';
+
+enum Area { guide, menu, full, settings, dialog }
+
+const double kRowH = 58, kGW = 980, kChW = 300;
+const int kRows = 6, kWinMin = 150;
+const double kPxPerMin = kGW / kWinMin;
+
+int clampI(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
+
+class _SetItem {
+  final String label, value;
+  final void Function(int dir) change;
+  final bool button;
+  _SetItem(this.label, this.value, this.change, {this.button = false});
+}
+
+class _MenuItem {
+  final String kind, label;
+  final int cat, count;
+  _MenuItem(this.kind, this.label, {this.cat = -1, this.count = 0});
+}
+
+class LiveScreen extends StatefulWidget {
+  final AppState app;
+  const LiveScreen({super.key, required this.app});
+
+  @override
+  State<LiveScreen> createState() => _LiveScreenState();
+}
+
+class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateMixin {
+  AppState get app => widget.app;
+
+  late final Player player;
+  late final VideoController vc;
+  late final AnimationController stripes;
+  final FocusNode _focus = FocusNode();
+  final ScrollController _menuScroll = ScrollController();
+  final List<StreamSubscription> _subs = [];
+  Timer? _tick, _osdTimer, _toastTimer;
+
+  Area area = Area.guide;
+  int catIdx = 0, menuIdx = 0, row = 0, top = 0, setIdx = 0, dlgIdx = 0;
+  List<Channel> list = [];
+  DateTime cursor = DateTime.now();
+  DateTime win = floor30(DateTime.now());
+  int? playingId;
+  bool osd = false, buffering = false, hasVideo = false, paused = false, _triedAlt = false;
+  String? playError, toast;
+  DateTime _backAt = DateTime(2000), _lastBack = DateTime(2000);
+  List<Channel>? _seen;
+
+  // ---------------------------------------------------------------- lifecycle
+
+  @override
+  void initState() {
+    super.initState();
+    player = Player();
+    vc = VideoController(player);
+    stripes = AnimationController(vsync: this, duration: const Duration(seconds: 7))..repeat();
+    _subs.add(player.stream.buffering.listen((b) {
+      if (mounted) setState(() => buffering = b);
+    }));
+    _subs.add(player.stream.width.listen((w) {
+      if (mounted) setState(() => hasVideo = (w ?? 0) > 0);
+    }));
+    _subs.add(player.stream.error.listen(_onPlayError));
+    _tick = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!mounted) return;
+      if (DateTime.now().isAfter(app.rangeEnd.subtract(const Duration(hours: 6)))) app.resetRange();
+      setState(() {});
+    });
+    app.addListener(_onApp);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _onApp());
+  }
+
+  @override
+  void dispose() {
+    app.removeListener(_onApp);
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _tick?.cancel();
+    _osdTimer?.cancel();
+    _toastTimer?.cancel();
+    stripes.dispose();
+    _menuScroll.dispose();
+    _focus.dispose();
+    player.dispose();
+    super.dispose();
+  }
+
+  void _onApp() {
+    if (!mounted) return;
+    if (!identical(app.channels, _seen)) {
+      _seen = app.channels;
+      if (app.channels.isEmpty) {
+        list = [];
+        playingId = null;
+        player.stop();
+      } else {
+        _setCategory(0);
+        Channel? last;
+        for (final c in app.channels) {
+          if (c.id == app.lastChannelId) last = c;
+        }
+        last ??= app.channels.first;
+        _tune(last);
+        final i = list.indexOf(last);
+        if (i >= 0) {
+          row = i;
+          top = i - 2;
+          _fixTop();
+        }
+      }
+    }
+    setState(() {});
+  }
+
+  void _onPlayError(String e) {
+    if (playingId == null || !mounted) return;
+    if (!_triedAlt) {
+      _triedAlt = true;
+      _open(alt: true);
+      return;
+    }
+    setState(() => playError = 'This channel isn\'t playing right now');
+  }
+
+  // ---------------------------------------------------------------- helpers
+
+  List<Category> get allCats => [const Category('__all', 'All Channels'), const Category('__fav', 'Favorites'), ...app.cats];
+
+  Channel? get cur => (row >= 0 && row < list.length) ? list[row] : null;
+  Channel? get playing => playingId == null ? null : app.byId[playingId];
+
+  String fmt(DateTime t) {
+    final m = t.minute.toString().padLeft(2, '0');
+    if (app.use24) return '${t.hour.toString().padLeft(2, '0')}:$m';
+    final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    return '$h:$m ${t.hour < 12 ? 'AM' : 'PM'}';
+  }
+
+  String dur(Duration d) {
+    final m = d.inMinutes, h = m ~/ 60;
+    return h > 0 ? '${h}h ${m % 60}m' : '${m}m';
+  }
+
+  int minsLeft(Program p, DateTime now) {
+    final s = p.end.difference(now).inSeconds;
+    return s <= 0 ? 0 : (s / 60).ceil();
+  }
+
+  double progress(Program p, DateTime now) {
+    final total = p.end.difference(p.start).inSeconds;
+    if (total <= 0 || !p.isLiveAt(now)) return 0;
+    return now.difference(p.start).inSeconds / total;
+  }
+
+  void _fixTop() {
+    if (row < top) top = row;
+    if (row >= top + kRows) top = row - kRows + 1;
+    final maxTop = list.length - kRows;
+    top = clampI(top, 0, maxTop < 0 ? 0 : maxTop);
+  }
+
+  void _setCategory(int i) {
+    final cats = allCats;
+    catIdx = clampI(i, 0, cats.length - 1);
+    list = app.listFor(cats[catIdx]);
+    final p = list.indexWhere((c) => c.id == playingId);
+    row = p >= 0 ? p : 0;
+    top = row - 2;
+    _fixTop();
+    cursor = DateTime.now();
+    win = floor30(cursor);
+  }
+
+  void _ensureVis() {
+    final minT = floor30(DateTime.now());
+    final we = win.add(const Duration(minutes: kWinMin));
+    if (!cursor.isBefore(we.subtract(const Duration(minutes: 30)))) {
+      win = floor30(cursor).subtract(const Duration(minutes: 30));
+    }
+    if (cursor.isBefore(win)) win = floor30(cursor);
+    if (win.isBefore(minT)) win = minT;
+  }
+
+  void _toast(String m) {
+    if (area == Area.full && RegExp(r'^(▶|●)').hasMatch(m)) return; // the info bar already says it
+    setState(() => toast = m);
+    _toastTimer?.cancel();
+    _toastTimer = Timer(const Duration(milliseconds: 1900), () {
+      if (mounted) setState(() => toast = null);
+    });
+  }
+
+  // ---------------------------------------------------------------- playback
+
+  void _tune(Channel ch) {
+    setState(() {
+      playingId = ch.id;
+      playError = null;
+      hasVideo = false;
+      buffering = true;
+      paused = false;
+      _triedAlt = false;
+    });
+    app.setLast(ch.id);
+    _open();
+  }
+
+  void _open({bool alt = false}) {
+    final ch = playing;
+    final c = app.client;
+    if (ch == null || c == null) return;
+    player.open(Media(c.liveUrl(ch.id, ext: alt ? 'm3u8' : 'ts')));
+  }
+
+  void _togglePause() {
+    if (playingId == null) return;
+    player.playOrPause();
+    setState(() => paused = !paused);
+    if (area == Area.full) _showOsd();
+  }
+
+  void _goFull() {
+    if (playingId == null) return;
+    setState(() {
+      area = Area.full;
+      toast = null;
+    });
+    _showOsd();
+  }
+
+  void _exitFull() {
+    setState(() {
+      area = Area.guide;
+      osd = false;
+      final i = list.indexWhere((c) => c.id == playingId);
+      if (i >= 0) {
+        row = i;
+        cursor = DateTime.now();
+        win = floor30(cursor);
+        _fixTop();
+      }
+    });
+  }
+
+  void _showOsd() {
+    setState(() => osd = true);
+    _osdTimer?.cancel();
+    _osdTimer = Timer(const Duration(milliseconds: 4500), () {
+      if (mounted && !paused) setState(() => osd = false);
+    });
+  }
+
+  void _toggleFav(Channel? ch) {
+    if (ch == null) return;
+    final adding = !app.favs.contains(ch.id);
+    app.toggleFav(ch.id);
+    _toast(adding ? '★ Added to Favorites' : 'Removed from Favorites');
+    if (allCats[catIdx].id == '__fav') {
+      final id = cur?.id;
+      list = app.listFor(allCats[catIdx]);
+      row = clampI(list.indexWhere((c) => c.id == id), 0, list.isEmpty ? 0 : list.length - 1);
+      _fixTop();
+    }
+  }
+
+  void _quit() {
+    player.stop();
+    if (Platform.isAndroid || Platform.isIOS) {
+      SystemNavigator.pop();
+    } else {
+      exit(0);
+    }
+  }
+
+  void _addAccount() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => LoginScreen(app: app, addMode: true)))
+        .then((_) => _focus.requestFocus());
+  }
+
+  // ---------------------------------------------------------------- menus
+
+  List<_MenuItem> get _menuItems {
+    final cats = allCats;
+    return [
+      for (var i = 0; i < cats.length; i++) _MenuItem('cat', cats[i].name, cat: i, count: app.countFor(cats[i])),
+      _MenuItem('settings', '⚙  Settings'),
+      _MenuItem('add', '＋  Add a subscription'),
+    ];
+  }
+
+  List<_SetItem> get _settings {
+    const fxs = ['subtle', 'full', 'off'];
+    const fxNames = {'subtle': 'Subtle', 'full': 'Full', 'off': 'Off'};
+    final info = app.info;
+    return [
+      _SetItem('Time format', app.use24 ? '24-hour' : '12-hour', (d) => app.setUse24(!app.use24)),
+      _SetItem('Focus effect', fxNames[app.fx] ?? 'Subtle', (d) => app.setFx(fxs[(fxs.indexOf(app.fx) + (d < 0 ? 2 : 1)) % 3])),
+      for (var i = 0; i < app.accounts.length; i++)
+        _SetItem(
+          i == app.active ? '● ${app.accounts[i].name}' : app.accounts[i].name,
+          i == app.active
+              ? (info != null && info.maxConnections > 0 ? '${info.activeConnections} of ${info.maxConnections} screens in use' : 'Watching now')
+              : 'Switch to this',
+          (d) {
+            if (i != app.active) {
+              _closeSettings();
+              app.openAccount(i);
+            }
+          },
+          button: true,
+        ),
+      _SetItem('Add a subscription', '', (d) {
+        _closeSettings();
+        _addAccount();
+      }, button: true),
+      _SetItem('Sign out of ${app.acc?.name ?? ''}', '', (d) {
+        _closeSettings();
+        player.stop();
+        app.removeActive();
+      }, button: true),
+    ];
+  }
+
+  void _openMenu() => setState(() {
+        area = Area.menu;
+        menuIdx = catIdx;
+        _scrollMenu();
+      });
+
+  void _closeMenu() => setState(() => area = Area.guide);
+
+  void _scrollMenu() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_menuScroll.hasClients) return;
+      final target = (menuIdx * 48.0 - 220).clamp(0.0, _menuScroll.position.maxScrollExtent).toDouble();
+      _menuScroll.animateTo(target, duration: const Duration(milliseconds: 150), curve: Curves.easeOut);
+    });
+  }
+
+  void _openSettings() => setState(() {
+        area = Area.settings;
+        setIdx = 0;
+      });
+
+  void _closeSettings() => setState(() => area = Area.guide);
+
+  // ---------------------------------------------------------------- input
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent e) {
+    if (e is! KeyDownEvent && e is! KeyRepeatEvent) return KeyEventResult.ignored;
+    final k = e.logicalKey;
+    String? a;
+    if (k == LogicalKeyboardKey.arrowUp) {
+      a = 'up';
+    } else if (k == LogicalKeyboardKey.arrowDown) {
+      a = 'down';
+    } else if (k == LogicalKeyboardKey.arrowLeft) {
+      a = 'left';
+    } else if (k == LogicalKeyboardKey.arrowRight) {
+      a = 'right';
+    } else if (e is KeyRepeatEvent) {
+      return KeyEventResult.handled; // only arrows repeat
+    } else if (k == LogicalKeyboardKey.select ||
+        k == LogicalKeyboardKey.enter ||
+        k == LogicalKeyboardKey.numpadEnter ||
+        k == LogicalKeyboardKey.gameButtonA ||
+        k == LogicalKeyboardKey.space) {
+      a = 'ok';
+    } else if (k == LogicalKeyboardKey.escape ||
+        k == LogicalKeyboardKey.goBack ||
+        k == LogicalKeyboardKey.browserBack ||
+        k == LogicalKeyboardKey.backspace ||
+        k == LogicalKeyboardKey.gameButtonB) {
+      a = 'back';
+    } else if (k == LogicalKeyboardKey.contextMenu || k == LogicalKeyboardKey.keyM || k == LogicalKeyboardKey.info) {
+      a = 'menu';
+    } else if (k == LogicalKeyboardKey.keyF) {
+      a = 'fav';
+    } else if (k == LogicalKeyboardKey.pageUp || k == LogicalKeyboardKey.channelUp) {
+      a = 'pgup';
+    } else if (k == LogicalKeyboardKey.pageDown || k == LogicalKeyboardKey.channelDown) {
+      a = 'pgdn';
+    } else if (k == LogicalKeyboardKey.mediaPlayPause ||
+        k == LogicalKeyboardKey.mediaPlay ||
+        k == LogicalKeyboardKey.mediaPause ||
+        k == LogicalKeyboardKey.keyP) {
+      a = 'pp';
+    }
+    if (a == null) return KeyEventResult.ignored;
+    _act(a);
+    return KeyEventResult.handled;
+  }
+
+  void _act(String a) {
+    if (a == 'back') {
+      final now = DateTime.now();
+      if (now.difference(_lastBack).inMilliseconds < 250) return; // same press reported twice
+      _lastBack = now;
+    }
+
+    // Not loaded yet / couldn't load
+    if (list.isEmpty && area == Area.guide && (app.loading || app.error != null)) {
+      if (a == 'ok' && app.error != null) app.openAccount(app.active);
+      if (a == 'menu' || a == 'left') _openSettings();
+      if (a == 'back') _backOrExit();
+      return;
+    }
+
+    switch (area) {
+      case Area.guide:
+        _guideAct(a);
+      case Area.menu:
+        _menuAct(a);
+      case Area.full:
+        _fullAct(a);
+      case Area.settings:
+        _settingsAct(a);
+      case Area.dialog:
+        _dialogAct(a);
+    }
+  }
+
+  void _backOrExit() {
+    final now = DateTime.now();
+    if (now.difference(_backAt).inMilliseconds < 2000) {
+      setState(() {
+        area = Area.dialog;
+        dlgIdx = 0;
+      });
+    } else {
+      _backAt = now;
+      _toast('Press back again to exit');
+    }
+  }
+
+  void _guideAct(String a) {
+    final ch = cur;
+    final now = DateTime.now();
+    switch (a) {
+      case 'up':
+      case 'down':
+        if (list.isEmpty) return;
+        row = (row + (a == 'up' ? -1 : 1) + list.length) % list.length;
+        _fixTop();
+      case 'pgup':
+      case 'pgdn':
+        if (list.isEmpty) return;
+        row = clampI(row + (a == 'pgup' ? -kRows : kRows), 0, list.length - 1);
+        _fixTop();
+      case 'right':
+        {
+          if (ch == null) return;
+          final p = app.progAt(ch, cursor);
+          if (!p.end.isBefore(app.rangeEnd)) return;
+          cursor = p.end;
+          _ensureVis();
+        }
+      case 'left':
+        {
+          if (ch == null) return _openMenu();
+          final minT = floor30(now);
+          final p = app.progAt(ch, cursor);
+          if (!p.start.isAfter(minT)) return _openMenu();
+          final pr = app.progAt(ch, p.start.subtract(const Duration(seconds: 1)));
+          cursor = pr.start.isAfter(minT) ? pr.start : minT;
+          _ensureVis();
+        }
+      case 'ok':
+        if (ch == null) return;
+        if (ch.id == playingId) return _goFull();
+        _tune(ch);
+        _toast('▶ ${ch.name}');
+        return;
+      case 'menu':
+        return _openMenu();
+      case 'fav':
+        _toggleFav(ch);
+      case 'pp':
+        _togglePause();
+      case 'back':
+        return _backOrExit();
+    }
+    setState(() {});
+  }
+
+  void _menuAct(String a) {
+    final items = _menuItems;
+    switch (a) {
+      case 'up':
+      case 'down':
+        {
+          menuIdx = (menuIdx + (a == 'up' ? -1 : 1) + items.length) % items.length;
+          final m = items[menuIdx];
+          if (m.kind == 'cat') _setCategory(m.cat); // the guide follows as you scroll
+          _scrollMenu();
+          setState(() {});
+        }
+      case 'ok':
+        {
+          final m = items[clampI(menuIdx, 0, items.length - 1)];
+          if (m.kind == 'cat') {
+            _setCategory(m.cat);
+            _closeMenu();
+          } else if (m.kind == 'settings') {
+            _openSettings();
+          } else {
+            _closeMenu();
+            _addAccount();
+          }
+        }
+      case 'right':
+      case 'back':
+      case 'menu':
+        _closeMenu();
+    }
+  }
+
+  void _fullAct(String a) {
+    switch (a) {
+      case 'up':
+      case 'down':
+      case 'pgup':
+      case 'pgdn':
+        {
+          if (list.isEmpty) return;
+          var i = list.indexWhere((c) => c.id == playingId);
+          final d = (a == 'up' || a == 'pgup') ? -1 : 1;
+          i = (i + d + list.length) % list.length;
+          row = i;
+          _tune(list[i]);
+          _showOsd();
+        }
+      case 'ok':
+        if (osd) {
+          setState(() => osd = false);
+        } else {
+          _showOsd();
+        }
+      case 'back':
+        _exitFull();
+      case 'fav':
+        _toggleFav(playing);
+        _showOsd();
+      case 'pp':
+        _togglePause();
+      default:
+        _showOsd();
+    }
+  }
+
+  void _settingsAct(String a) {
+    final items = _settings;
+    switch (a) {
+      case 'up':
+      case 'down':
+        setState(() => setIdx = (setIdx + (a == 'up' ? -1 : 1) + items.length) % items.length);
+      case 'left':
+      case 'right':
+      case 'ok':
+        {
+          final s = items[clampI(setIdx, 0, items.length - 1)];
+          if (s.button && a != 'ok') return;
+          s.change(a == 'left' ? -1 : 1);
+          setState(() {});
+        }
+      case 'back':
+      case 'menu':
+        _closeSettings();
+    }
+  }
+
+  void _dialogAct(String a) {
+    switch (a) {
+      case 'left':
+      case 'right':
+        setState(() => dlgIdx = 1 - dlgIdx);
+      case 'ok':
+        if (dlgIdx == 1) {
+          _quit();
+        } else {
+          setState(() => area = Area.guide);
+        }
+      case 'back':
+        setState(() => area = Area.guide);
+    }
+  }
+
+  void _tapCell(int r, Program p) {
+    if (area == Area.menu) return _closeMenu();
+    if (area != Area.guide || r >= list.length) return;
+    final focused = r == row ? app.progAt(list[r], cursor) : null;
+    if (identical(focused, p)) return _act('ok');
+    final now = DateTime.now();
+    setState(() {
+      row = r;
+      cursor = p.isLiveAt(now) ? now : (p.start.isBefore(win) ? win : p.start);
+    });
+  }
+
+  void _tapChannel(int i) {
+    if (area == Area.menu) return _closeMenu();
+    if (area != Area.guide || i >= list.length) return;
+    final ch = list[i];
+    setState(() {
+      row = i;
+      cursor = DateTime.now();
+    });
+    if (ch.id == playingId) {
+      _goFull();
+    } else {
+      _tune(ch);
+    }
+  }
+
+  // ---------------------------------------------------------------- build
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _act('back');
+      },
+      child: Focus(
+        focusNode: _focus,
+        autofocus: true,
+        onKeyEvent: _onKey,
+        child: Container(
+          color: Colors.black,
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: SizedBox(width: 1280, height: 720, child: _stage()),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _stage() {
+    return DefaultTextStyle(
+      style: ts(16),
+      child: Container(
+        decoration: TP.background,
+        child: Stack(clipBehavior: Clip.hardEdge, children: [
+          _info(),
+          _brand(),
+          _guide(),
+          _hints(),
+          _video(),
+          _menu(),
+          if (area == Area.settings) _settingsPanel(),
+          if (area == Area.dialog) _dialog(),
+          if (list.isEmpty && (app.loading || app.error != null)) _loadingPanel(),
+          _toastWidget(),
+        ]),
+      ),
+    );
+  }
+
+  Widget _info() {
+    final ch = cur ?? playing;
+    if (ch == null) return const SizedBox.shrink();
+    final now = DateTime.now();
+    final p = app.progAt(ch, cur != null ? cursor : now);
+    final live = p.isLiveAt(now);
+    final nx = app.progAt(ch, p.end);
+    final meta = live
+        ? '${minsLeft(p, now)}m left'
+        : (p.start.isAfter(now) ? 'Starts in ${dur(p.start.difference(now))}' : 'Ended');
+    return Positioned(
+      left: 504,
+      top: 28,
+      width: 600,
+      height: 252,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 2),
+            decoration: BoxDecoration(color: TP.kbd, borderRadius: BorderRadius.circular(6)),
+            child: Text('${ch.num}', style: ts(18, w: FontWeight.w700)),
+          ),
+          const SizedBox(width: 10),
+          Flexible(child: Text(ch.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: const Color(0xFFB8C8D8)))),
+          if (ch.catchup) Text('  ⟲ Catch-up', style: ts(14, c: const Color(0xFF9FD3FF))),
+          if (app.favs.contains(ch.id)) Text('  ★', style: ts(18, c: TP.orange)),
+          if (ch.id == playingId) Text('  ▶ Playing', style: ts(14, c: TP.orange)),
+        ]),
+        const SizedBox(height: 10),
+        Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(34, w: FontWeight.w800)),
+        const SizedBox(height: 6),
+        Row(children: [
+          if (live) _liveBadge(),
+          if (live) const SizedBox(width: 10),
+          Text('${fmt(p.start)} – ${fmt(p.end)} · $meta', style: ts(17, c: const Color(0xFFC9D2DC))),
+        ]),
+        if (live) Padding(padding: const EdgeInsets.only(top: 12), child: progressBar(420, progress(p, now))),
+        if (!identical(nx, p))
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Text.rich(
+              TextSpan(children: [
+                TextSpan(text: 'NEXT: ', style: ts(17, w: FontWeight.w700, c: TP.red)),
+                TextSpan(text: '${fmt(nx.start)} ${nx.title}', style: ts(17, c: const Color(0xFFCFCFCF))),
+              ]),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        const SizedBox(height: 10),
+        Text(p.desc, maxLines: 3, overflow: TextOverflow.ellipsis, style: ts(16, c: const Color(0xFFAEBCCB), h: 1.45)),
+      ]),
+    );
+  }
+
+  Widget _liveBadge() => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: TP.red,
+          borderRadius: BorderRadius.circular(6),
+          boxShadow: const [BoxShadow(color: Color(0x73E04848), blurRadius: 12, offset: Offset(0, 4))],
+        ),
+        child: Text('LIVE', style: ts(12, w: FontWeight.w800, c: Colors.white)),
+      );
+
+  Widget _brand() {
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final n = DateTime.now();
+    return Positioned(
+      right: 26,
+      top: 22,
+      width: 150,
+      child: Column(children: [
+        Image.asset('assets/logo.png', width: 64),
+        const SizedBox(height: 4),
+        Text(fmt(n), style: ts(24, w: FontWeight.w700)),
+        Text('${days[n.weekday - 1]}, ${months[n.month - 1]} ${n.day}', style: ts(13, c: TP.dim2)),
+      ]),
+    );
+  }
+
+  Widget _guide() {
+    final now = DateTime.now();
+    final we = win.add(const Duration(minutes: kWinMin));
+    final cats = allCats;
+    final catName = cats[clampI(catIdx, 0, cats.length - 1)].name;
+
+    final rows = <Widget>[];
+    Widget? focusedRow;
+    for (var i = top; i < list.length && i < top + kRows; i++) {
+      final w = Positioned(left: 0, top: (i - top) * kRowH, width: 1280, height: kRowH, child: _row(i, now, we));
+      if (i == row) {
+        focusedRow = w;
+      } else {
+        rows.add(w);
+      }
+    }
+    if (focusedRow != null) rows.add(focusedRow);
+    if (list.isNotEmpty) app.ensureEpg(list.skip(top).take(kRows * 2));
+
+    final showNow = !now.isBefore(win) && now.isBefore(we);
+    final nowX = kChW + now.difference(win).inSeconds / 60 * kPxPerMin - 1;
+
+    return Positioned(
+      left: 0,
+      top: 300,
+      width: 1280,
+      height: 390,
+      child: Container(
+        decoration: const BoxDecoration(
+          color: Color(0x73142A44),
+          border: Border(top: BorderSide(color: Color(0x1FC9D2DC))),
+        ),
+        child: Stack(clipBehavior: Clip.none, children: [
+          // header
+          Positioned(
+            left: 0,
+            top: 0,
+            width: 1280,
+            height: 36,
+            child: Container(
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x1FC9D2DC)))),
+              child: Stack(children: [
+                Positioned(
+                  left: 0,
+                  top: 0,
+                  width: kChW,
+                  height: 36,
+                  child: GestureDetector(
+                    onTap: () {
+                      if (area == Area.guide) _openMenu();
+                    },
+                    child: Container(
+                      color: Colors.transparent,
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(children: [
+                        Text('☰', style: ts(20, c: const Color(0xFFC9D2DC))),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Text(catName.toUpperCase(),
+                              maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(15, w: FontWeight.w700, c: TP.orange)),
+                        ),
+                      ]),
+                    ),
+                  ),
+                ),
+                for (var i = 0; i < 6; i++)
+                  Positioned(
+                    left: kChW + i * 30 * kPxPerMin,
+                    top: 0,
+                    width: 30 * kPxPerMin,
+                    height: 36,
+                    child: Container(
+                      padding: const EdgeInsets.only(left: 10),
+                      alignment: Alignment.centerLeft,
+                      decoration: const BoxDecoration(border: Border(left: BorderSide(color: Color(0x40C9D2DC)))),
+                      child: Text(fmt(win.add(Duration(minutes: 30 * i))), style: ts(15, c: const Color(0xFFB8C8D8))),
+                    ),
+                  ),
+              ]),
+            ),
+          ),
+          // rows
+          Positioned(
+            left: 0,
+            top: 36,
+            width: 1280,
+            height: kRowH * kRows,
+            child: Listener(
+              onPointerSignal: (e) {
+                if (e is PointerScrollEvent && area == Area.guide) _act(e.scrollDelta.dy > 0 ? 'down' : 'up');
+              },
+              child: GestureDetector(
+                onVerticalDragEnd: (d) {
+                  final v = d.primaryVelocity ?? 0;
+                  if (v.abs() < 150 || list.isEmpty || area != Area.guide) return;
+                  final steps = clampI((v.abs() / 500).ceil(), 1, kRows);
+                  setState(() {
+                    row = clampI(row + (v < 0 ? steps : -steps), 0, list.length - 1);
+                    _fixTop();
+                  });
+                },
+                onHorizontalDragEnd: (d) {
+                  final v = d.primaryVelocity ?? 0;
+                  if (v.abs() < 150 || area != Area.guide) return;
+                  final minT = floor30(DateTime.now());
+                  setState(() {
+                    win = win.add(Duration(minutes: v < 0 ? 60 : -60));
+                    if (win.isBefore(minT)) win = minT;
+                    cursor = win == minT ? DateTime.now() : win;
+                  });
+                },
+                child: Stack(clipBehavior: Clip.none, children: rows),
+              ),
+            ),
+          ),
+          if (showNow)
+            Positioned(
+              left: nowX,
+              top: 36,
+              bottom: 0,
+              width: 2,
+              child: IgnorePointer(
+                child: Container(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFF0962F),
+                    boxShadow: [BoxShadow(color: Color(0xFFF0962F), blurRadius: 10)],
+                  ),
+                ),
+              ),
+            ),
+          if (showNow)
+            Positioned(
+              left: nowX - 4,
+              top: 32,
+              width: 10,
+              height: 10,
+              child: IgnorePointer(
+                child: Container(decoration: const BoxDecoration(color: Color(0xFFF0962F), shape: BoxShape.circle)),
+              ),
+            ),
+          if (list.isEmpty && !app.loading && app.error == null)
+            Positioned(
+              left: kChW,
+              right: 0,
+              top: 140,
+              child: Text(
+                allCats[clampI(catIdx, 0, allCats.length - 1)].id == '__fav'
+                    ? 'No favorites yet — press ★ (or F) on a channel to add it here.'
+                    : 'No channels in this group.',
+                textAlign: TextAlign.center,
+                style: ts(18, c: TP.dim2),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _row(int i, DateTime now, DateTime we) {
+    final ch = list[i];
+    final isCur = i == row;
+    final fp = isCur ? app.progAt(ch, cursor) : null;
+    final cells = <Widget>[];
+    Widget? fcell;
+    for (final p in app.epgFor(ch)) {
+      if (!p.end.isAfter(win) || !p.start.isBefore(we)) continue;
+      final f = identical(fp, p);
+      final w = _cell(p, i, f, p.isLiveAt(now), we);
+      if (f) {
+        fcell = w;
+      } else {
+        cells.add(w);
+      }
+    }
+    if (fcell != null) cells.add(fcell);
+    return Stack(clipBehavior: Clip.none, children: [
+      Positioned(left: 0, top: 0, width: kChW, height: kRowH, child: _chCell(ch, i, isCur)),
+      Positioned(left: kChW, top: 0, width: kGW, height: kRowH, child: Stack(clipBehavior: Clip.none, children: cells)),
+      Positioned(left: 0, right: 0, bottom: 0, height: 1, child: IgnorePointer(child: Container(color: const Color(0x2E000000)))),
+    ]);
+  }
+
+  Widget _chCell(Channel ch, int i, bool isCur) {
+    return GestureDetector(
+      onTap: () => _tapChannel(i),
+      child: Container(
+        decoration: BoxDecoration(
+          color: isCur ? TP.chCellCur : TP.chCell,
+          border: Border(
+            left: BorderSide(color: ch.id == playingId ? TP.orange : Colors.transparent, width: 4),
+            right: const BorderSide(color: TP.line, width: 2),
+          ),
+        ),
+        padding: const EdgeInsets.only(left: 4, right: 12),
+        child: Row(children: [
+          SizedBox(
+            width: 40,
+            child: Text('${ch.num}', textAlign: TextAlign.right, style: ts(15, w: FontWeight.w600, c: const Color(0xFFB3C3D4))),
+          ),
+          const SizedBox(width: 10),
+          ChannelBadge(ch: ch),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(ch.name, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: ts(17, w: FontWeight.w600)),
+          ),
+          if (ch.catchup) Text(' ⟲', style: ts(14, c: const Color(0xFF9FD3FF))),
+          if (app.favs.contains(ch.id)) Text(' ★', style: ts(15, c: TP.orange)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _cell(Program p, int r, bool f, bool isNow, DateTime we) {
+    final a = p.start.isBefore(win) ? win : p.start;
+    final b = p.end.isAfter(we) ? we : p.end;
+    final x = a.difference(win).inSeconds / 60 * kPxPerMin;
+    final w = b.difference(a).inSeconds / 60 * kPxPerMin;
+    final focus = f && area == Area.guide;
+    final sel = f && area != Area.guide;
+    final fx = app.fx;
+    final lift = focus && fx != 'off';
+    final radius = BorderRadius.circular(lift ? (fx == 'full' ? 9 : 7) : 0);
+    final cut = p.start.isBefore(win);
+    return Positioned(
+      left: x,
+      top: 0,
+      width: w,
+      height: kRowH,
+      child: GestureDetector(
+        onTap: () => _tapCell(r, p),
+        child: AnimatedScale(
+          scale: lift ? (fx == 'full' ? 1.06 : 1.03) : 1,
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOutCubic,
+          child: Container(
+            margin: const EdgeInsets.only(right: 2),
+            decoration: BoxDecoration(
+              color: focus ? null : (isNow ? TP.cellNow : TP.cell),
+              gradient: focus ? TP.silver : null,
+              borderRadius: radius,
+              border: sel ? Border.all(color: const Color(0xB3E08A2C), width: 2) : null,
+              boxShadow: lift
+                  ? [BoxShadow(color: const Color(0x80000000), blurRadius: fx == 'full' ? 32 : 14, offset: Offset(0, fx == 'full' ? 16 : 7))]
+                  : null,
+            ),
+            child: ClipRRect(
+              borderRadius: radius,
+              child: Stack(children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 7, 10, 0),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(
+                      '${cut ? '‹ ' : ''}${p.title}',
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.ellipsis,
+                      style: ts(16, w: FontWeight.w600, c: focus ? TP.ink : (p.placeholder ? const Color(0xFF9DB0C4) : TP.text)),
+                    ),
+                    if (w > 110 && !p.placeholder)
+                      Text(
+                        '${fmt(p.start)} – ${fmt(p.end)}',
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.clip,
+                        style: ts(13, c: focus ? const Color(0xFF33475C) : TP.dim2),
+                      ),
+                  ]),
+                ),
+                if (focus) Positioned(left: 0, top: 0, bottom: 0, width: 5, child: Container(color: TP.orange)),
+                if (lift)
+                  const Positioned.fill(
+                    child: IgnorePointer(child: DecoratedBox(decoration: BoxDecoration(gradient: TP.sheen))),
+                  ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _hints() {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      height: 30,
+      child: Container(
+        color: TP.hintBar,
+        padding: const EdgeInsets.symmetric(horizontal: 22),
+        child: const Row(children: [
+          Kbd('◀', 'Groups'),
+          SizedBox(width: 26),
+          Kbd('▲▼', 'Channels'),
+          SizedBox(width: 26),
+          Kbd('▶', 'Later shows'),
+          SizedBox(width: 26),
+          Kbd('OK', 'Watch / Full screen'),
+          SizedBox(width: 26),
+          Kbd('★', 'Favorite (F)'),
+          SizedBox(width: 26),
+          Kbd('☰', 'Menu (M)'),
+          SizedBox(width: 26),
+          Kbd('BACK', 'Exit'),
+        ]),
+      ),
+    );
+  }
+
+  Widget _video() {
+    final full = area == Area.full;
+    final ch = playing;
+    final showStripes = ch != null && (!hasVideo || buffering || playError != null);
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      left: full ? 0 : 28,
+      top: full ? 0 : 26,
+      width: full ? 1280 : 448,
+      height: full ? 720 : 252,
+      child: GestureDetector(
+        onTap: () {
+          if (area == Area.guide) {
+            _goFull();
+          } else if (area == Area.full) {
+            _act('ok');
+          } else if (area == Area.menu) {
+            _closeMenu();
+          }
+        },
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(full ? 0 : 14),
+            border: full ? null : Border.all(color: const Color(0x2EC9D2DC), width: 2),
+            boxShadow: full ? null : const [BoxShadow(color: Color(0x80000000), blurRadius: 30, offset: Offset(0, 10))],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(full ? 0 : 12),
+            child: Stack(fit: StackFit.expand, children: [
+              Video(controller: vc, controls: NoVideoControls, fill: Colors.black),
+              if (ch == null)
+                Center(
+                  child: Text('Press OK on a show to start watching',
+                      textAlign: TextAlign.center, style: ts(18, c: const Color(0xFF8DA0B5))),
+                ),
+              if (showStripes)
+                AnimatedBuilder(
+                  animation: stripes,
+                  builder: (context, _) => CustomPaint(
+                    painter: StripesPainter(
+                      stripes.value,
+                      ch!.hue,
+                      ch.name,
+                      playError ?? (paused ? 'Paused' : 'Tuning in…'),
+                    ),
+                  ),
+                ),
+              if (paused)
+                Center(
+                  child: Container(
+                    width: full ? 120 : 70,
+                    height: full ? 120 : 70,
+                    alignment: Alignment.center,
+                    decoration: const BoxDecoration(color: Color(0xA6050C16), shape: BoxShape.circle),
+                    child: Text('❚❚', style: ts(full ? 48 : 26, c: Colors.white)),
+                  ),
+                ),
+              if (full && osd) _osd(),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _osd() {
+    final ch = playing;
+    if (ch == null) return const SizedBox.shrink();
+    final now = DateTime.now();
+    final p = app.progAt(ch, now);
+    final nx = app.progAt(ch, p.end);
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(44, 70, 44, 38),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            stops: [0, 0.65, 1],
+            colors: [Color(0xF503080F), Color(0xBF03080F), Color(0x0003080F)],
+          ),
+        ),
+        child: Row(children: [
+          ChannelBadge(ch: ch, w: 110, h: 72, fontSize: 26),
+          const SizedBox(width: 26),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              Text('${ch.num} · ${ch.name}${app.favs.contains(ch.id) ? '  ★' : ''}', style: ts(19, c: const Color(0xFFB8C8D8))),
+              const SizedBox(height: 4),
+              Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(34, w: FontWeight.w800)),
+              const SizedBox(height: 6),
+              Text(
+                p.placeholder ? 'No guide information' : '${fmt(p.start)} – ${fmt(p.end)} · ${minsLeft(p, now)}m left',
+                style: ts(17, c: const Color(0xFFC9D2DC)),
+              ),
+              const SizedBox(height: 10),
+              progressBar(640, progress(p, now)),
+              if (!identical(nx, p))
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: Text.rich(TextSpan(children: [
+                    TextSpan(text: 'NEXT: ', style: ts(17, w: FontWeight.w700, c: TP.red)),
+                    TextSpan(text: '${fmt(nx.start)} ${nx.title}', style: ts(17, c: const Color(0xFFCFCFCF))),
+                  ])),
+                ),
+              if (paused)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text('❚❚ Paused — press ⏯ or P to play', style: ts(17, w: FontWeight.w700, c: TP.orangeLight)),
+                ),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _menu() {
+    final items = _menuItems;
+    final open = area == Area.menu;
+    return AnimatedPositioned(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOutCubic,
+      left: open ? 0 : -400,
+      top: 0,
+      bottom: 0,
+      width: 370,
+      child: Container(
+        decoration: const BoxDecoration(
+          color: TP.panel,
+          boxShadow: [BoxShadow(color: Color(0xB3000000), blurRadius: 40, offset: Offset(12, 0))],
+        ),
+        padding: const EdgeInsets.only(top: 22, bottom: 14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+            child: Row(children: [
+              Image.asset('assets/logo.png', width: 44),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(app.acc?.name ?? 'Groups',
+                    maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(22, w: FontWeight.w800)),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: ListView.builder(
+              controller: _menuScroll,
+              itemCount: items.length,
+              itemExtent: 48,
+              itemBuilder: (context, k) {
+                final m = items[k];
+                final focused = open && k == menuIdx;
+                return LiftItem(
+                  focused: focused,
+                  fx: app.fx,
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 11),
+                  onTap: () {
+                    setState(() => menuIdx = k);
+                    _act('ok');
+                  },
+                  child: Row(children: [
+                    if (m.kind == 'cat')
+                      Container(
+                        width: 9,
+                        height: 9,
+                        margin: const EdgeInsets.only(right: 12),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: m.cat == catIdx ? TP.orange : Colors.transparent,
+                        ),
+                      ),
+                    Expanded(child: Text(m.label, maxLines: 1, overflow: TextOverflow.ellipsis)),
+                    if (m.kind == 'cat')
+                      Text('${m.count}', style: ts(15, c: focused ? const Color(0xFF33475C) : const Color(0xFFA5B6C8))),
+                  ]),
+                );
+              },
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _settingsPanel() {
+    final items = _settings;
+    final idx = clampI(setIdx, 0, items.length - 1);
+    return Positioned.fill(
+      child: GestureDetector(
+        onTap: _closeSettings,
+        child: Container(
+          color: const Color(0x8C0A1626),
+          alignment: Alignment.center,
+          child: GestureDetector(
+            onTap: () {},
+            child: Container(
+              width: 700,
+              padding: const EdgeInsets.only(top: 28, bottom: 18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1F3A5D),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0x29C9D2DC)),
+                boxShadow: const [BoxShadow(color: Color(0xB3000000), blurRadius: 80, offset: Offset(0, 30))],
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(30, 0, 30, 14),
+                  child: Text('Settings', style: ts(26, w: FontWeight.w800)),
+                ),
+                for (var i = 0; i < items.length; i++)
+                  LiftItem(
+                    focused: i == idx,
+                    fx: app.fx,
+                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                    onTap: () {
+                      setState(() => setIdx = i);
+                      _act('ok');
+                    },
+                    child: Row(children: [
+                      Expanded(child: Text(items[i].label, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(19, c: i == idx ? TP.ink : TP.text))),
+                      Text(
+                        items[i].button ? items[i].value : '‹  ${items[i].value}  ›',
+                        style: ts(17, c: i == idx ? const Color(0xFF22364B) : const Color(0xFFB8C8D8)),
+                      ),
+                    ]),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(30, 12, 30, 0),
+                  child: Text('◀ ▶ or OK to change · BACK to close', style: ts(14, c: const Color(0xFFA5B6C8))),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dialog() {
+    Widget btn(String label, int i) => Expanded(
+          child: GestureDetector(
+            onTap: () {
+              setState(() => dlgIdx = i);
+              _act('ok');
+            },
+            child: AnimatedScale(
+              scale: dlgIdx == i && app.fx != 'off' ? 1.05 : 1,
+              duration: const Duration(milliseconds: 150),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  gradient: dlgIdx == i ? TP.silver : null,
+                  color: dlgIdx == i ? null : TP.kbd,
+                  borderRadius: BorderRadius.circular(10),
+                  boxShadow: dlgIdx == i && app.fx != 'off'
+                      ? const [BoxShadow(color: Color(0x73000000), blurRadius: 28, offset: Offset(0, 14))]
+                      : null,
+                ),
+                child: Text(label, style: ts(18, w: FontWeight.w700, c: dlgIdx == i ? TP.ink : TP.text)),
+              ),
+            ),
+          ),
+        );
+    return Positioned.fill(
+      child: Container(
+        color: const Color(0x8C0A1626),
+        alignment: Alignment.center,
+        child: Container(
+          width: 460,
+          padding: const EdgeInsets.all(30),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1F3A5D),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0x29C9D2DC)),
+          ),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Exit Tame Player?', style: ts(26, w: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Text('Playback will stop.', style: ts(16, c: TP.dim2)),
+            const SizedBox(height: 22),
+            Row(children: [btn('Stay', 0), const SizedBox(width: 14), btn('Exit', 1)]),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _loadingPanel() {
+    final err = app.error;
+    return Positioned.fill(
+      child: Container(
+        decoration: TP.background,
+        alignment: Alignment.center,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Image.asset('assets/logo.png', width: 120),
+          const SizedBox(height: 24),
+          if (err == null) ...[
+            const SizedBox(width: 36, height: 36, child: CircularProgressIndicator(color: TP.orange, strokeWidth: 3)),
+            const SizedBox(height: 18),
+            Text('Loading your channels…', style: ts(22, w: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Text(app.acc?.name ?? '', style: ts(16, c: TP.dim2)),
+          ] else ...[
+            Text('Couldn\'t load ${app.acc?.name ?? 'your channels'}', style: ts(24, w: FontWeight.w800)),
+            const SizedBox(height: 10),
+            SizedBox(width: 640, child: Text(err, textAlign: TextAlign.center, style: ts(17, c: TP.dim2, h: 1.4))),
+            const SizedBox(height: 22),
+            Row(mainAxisSize: MainAxisSize.min, children: [
+              GestureDetector(
+                onTap: () => app.openAccount(app.active),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                  decoration: BoxDecoration(color: TP.orange, borderRadius: BorderRadius.circular(10)),
+                  child: Text('OK  Try again', style: ts(17, w: FontWeight.w700, c: const Color(0xFF111111))),
+                ),
+              ),
+              const SizedBox(width: 14),
+              GestureDetector(
+                onTap: _openSettings,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                  decoration: BoxDecoration(color: TP.kbd, borderRadius: BorderRadius.circular(10)),
+                  child: Text('☰  Settings', style: ts(17, w: FontWeight.w700)),
+                ),
+              ),
+            ]),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _toastWidget() {
+    final m = toast;
+    final full = area == Area.full;
+    Widget card = const SizedBox.shrink();
+    if (m != null) {
+      final match = RegExp(r'^(●|▶|★|❚❚)\s*').firstMatch(m);
+      final icon = match?.group(1) ?? 'ℹ';
+      final text = match == null ? m : m.substring(match.end);
+      final red = icon == '●';
+      card = ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(12, 12, 22, 12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0x59FFFFFF)),
+              gradient: const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0x42FFFFFF), Color(0x1AFFFFFF)],
+              ),
+            ),
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: 38,
+                height: 38,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: red ? const [Color(0xFFFF6B6B), Color(0xFFD93636)] : const [TP.orangeLight, TP.orange],
+                  ),
+                ),
+                child: Text(icon, style: ts(18, c: red ? Colors.white : const Color(0xFF111111))),
+              ),
+              const SizedBox(width: 14),
+              Text(text, style: ts(19, w: FontWeight.w700, c: Colors.white)),
+            ]),
+          ),
+        ),
+      );
+    }
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: full ? 30 : null,
+      bottom: full ? null : 52,
+      child: IgnorePointer(
+        child: Center(
+          child: AnimatedOpacity(
+            opacity: m == null ? 0 : 1,
+            duration: const Duration(milliseconds: 220),
+            child: card,
+          ),
+        ),
+      ),
+    );
+  }
+}
