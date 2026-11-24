@@ -82,7 +82,11 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     _subs.add(player.stream.error.listen(_onPlayError));
     _tick = Timer.periodic(const Duration(seconds: 15), (_) {
       if (!mounted) return;
-      if (DateTime.now().isAfter(app.rangeEnd.subtract(const Duration(hours: 6)))) app.resetRange();
+      final now = DateTime.now();
+      if (now.isAfter(app.rangeEnd.subtract(const Duration(hours: 6)))) app.resetRange();
+      if (cursor.isBefore(now)) cursor = now;
+      final minT = floor30(now);
+      if (win.isBefore(minT)) win = minT;
       setState(() {});
     });
     app.addListener(_onApp);
@@ -457,6 +461,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   void _guideAct(String a) {
     final ch = cur;
     final now = DateTime.now();
+    if (cursor.isBefore(now)) cursor = now;
     switch (a) {
       case 'up':
       case 'down':
@@ -479,11 +484,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       case 'left':
         {
           if (ch == null) return _openMenu();
-          final minT = floor30(now);
           final p = app.progAt(ch, cursor);
-          if (!p.start.isAfter(minT)) return _openMenu();
+          if (!p.start.isAfter(now)) return _openMenu(); // already on the show that's on now
           final pr = app.progAt(ch, p.start.subtract(const Duration(seconds: 1)));
-          cursor = pr.start.isAfter(minT) ? pr.start : minT;
+          cursor = pr.start.isAfter(now) ? pr.start : now;
           _ensureVis();
         }
       case 'ok':
@@ -614,7 +618,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final now = DateTime.now();
     setState(() {
       row = r;
-      cursor = p.isLiveAt(now) ? now : (p.start.isBefore(win) ? win : p.start);
+      cursor = p.start.isAfter(now) ? p.start : now;
     });
   }
 
