@@ -16,9 +16,8 @@ import 'xtream.dart';
 
 enum Area { guide, menu, full, settings, dialog }
 
-const double kRowH = 58, kGW = 980, kChW = 300;
-const int kRows = 6, kWinMin = 150;
-const double kPxPerMin = kGW / kWinMin;
+const double kRowH = 58, kChW = 300;
+const double kPxPerMin = 980 / 150; // 30 minutes = 196 px
 
 int clampI(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
 
@@ -62,6 +61,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
   Area area = Area.guide;
   int catIdx = 0, menuIdx = 0, row = 0, top = 0, setIdx = 1, dlgIdx = 0;
   String setPage = 'main';
+  double sw = 1280, sh = 720; // stage size: always fills the window exactly
+  int get rows => clampI(((sh - 300 - 36 - 30) / kRowH).floor(), 3, 30);
+  int get winMin => ((sw - kChW) / kPxPerMin).floor();
   String _catId = '__all';
   final GlobalKey _setFocusKey = GlobalKey();
   List<Channel> list = [];
@@ -188,8 +190,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _fixTop() {
     if (row < top) top = row;
-    if (row >= top + kRows) top = row - kRows + 1;
-    final maxTop = list.length - kRows;
+    if (row >= top + rows) top = row - rows + 1;
+    final maxTop = list.length - rows;
     top = clampI(top, 0, maxTop < 0 ? 0 : maxTop);
   }
 
@@ -208,7 +210,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   void _ensureVis() {
     final minT = floor30(DateTime.now());
-    final we = win.add(const Duration(minutes: kWinMin));
+    final we = win.add(Duration(minutes: winMin));
     if (!cursor.isBefore(we.subtract(const Duration(minutes: 30)))) {
       win = floor30(cursor).subtract(const Duration(minutes: 30));
     }
@@ -564,7 +566,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       case 'pgup':
       case 'pgdn':
         if (list.isEmpty) return;
-        row = clampI(row + (a == 'pgup' ? -kRows : kRows), 0, list.length - 1);
+        row = clampI(row + (a == 'pgup' ? -rows : rows), 0, list.length - 1);
         _fixTop();
       case 'right':
         {
@@ -763,12 +765,24 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         onKeyEvent: _onKey,
         child: Container(
           decoration: TP.background,
-          child: Center(
-            child: FittedBox(
-              fit: BoxFit.contain,
-              child: SizedBox(width: 1280, height: 720, child: _stage()),
-            ),
-          ),
+          child: LayoutBuilder(builder: (context, c) {
+            final w = c.maxWidth, h = c.maxHeight;
+            if (w > 0 && h > 0) {
+              final aspect = w / h;
+              if (aspect >= 16 / 9) {
+                sh = 720;
+                sw = 720 * aspect;
+              } else {
+                sw = 1280;
+                sh = 1280 / aspect;
+              }
+            }
+            return SizedBox(
+              width: w,
+              height: h,
+              child: FittedBox(fit: BoxFit.fill, child: SizedBox(width: sw, height: sh, child: _stage())),
+            );
+          }),
         ),
       ),
     );
@@ -879,28 +893,29 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   Widget _guide() {
     final now = DateTime.now();
-    final we = win.add(const Duration(minutes: kWinMin));
+    final we = win.add(Duration(minutes: winMin));
     final cats = allCats;
     final catName = cats[clampI(catIdx, 0, cats.length - 1)].name;
 
-    final rows = <Widget>[];
+    final rowW = <Widget>[];
+    final nRows = rows;
     Widget? focusedRow;
-    for (var i = top; i < list.length && i < top + kRows; i++) {
-      final w = Positioned(left: 0, top: (i - top) * kRowH, width: 1280, height: kRowH, child: _row(i, now, we));
+    for (var i = top; i < list.length && i < top + nRows; i++) {
+      final w = Positioned(left: 0, top: (i - top) * kRowH, width: sw, height: kRowH, child: _row(i, now, we));
       if (i == row) {
         focusedRow = w;
       } else {
-        rows.add(w);
+        rowW.add(w);
       }
     }
     final showNowLine = !now.isBefore(win) && now.isBefore(we);
     if (showNowLine) {
       final x = kChW + now.difference(win).inSeconds / 60 * kPxPerMin - 1;
-      rows.add(Positioned(
+      rowW.add(Positioned(
         left: x,
         top: 0,
         width: 2,
-        height: kRowH * kRows,
+        height: kRowH * nRows,
         child: IgnorePointer(
           child: Container(
             decoration: const BoxDecoration(
@@ -911,8 +926,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         ),
       ));
     }
-    if (focusedRow != null) rows.add(focusedRow);
-    if (list.isNotEmpty) app.ensureEpg(list.skip(top).take(kRows * 2));
+    if (focusedRow != null) rowW.add(focusedRow);
+    if (list.isNotEmpty) app.ensureEpg(list.skip(top).take(nRows * 2));
 
     final showNow = !now.isBefore(win) && now.isBefore(we);
     final nowX = kChW + now.difference(win).inSeconds / 60 * kPxPerMin - 1;
@@ -920,8 +935,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     return Positioned(
       left: 0,
       top: 300,
-      width: 1280,
-      height: 390,
+      width: sw,
+      height: sh - 330,
       child: Container(
         decoration: const BoxDecoration(
           color: Color(0x73142A44),
@@ -932,7 +947,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           Positioned(
             left: 0,
             top: 0,
-            width: 1280,
+            width: sw,
             height: 36,
             child: Container(
               decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0x1FC9D2DC)))),
@@ -960,7 +975,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                     ),
                   ),
                 ),
-                for (var i = 0; i < 6; i++)
+                for (var i = 0; i <= winMin ~/ 30; i++)
                   Positioned(
                     left: kChW + i * 30 * kPxPerMin,
                     top: 0,
@@ -980,8 +995,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           Positioned(
             left: 0,
             top: 36,
-            width: 1280,
-            height: kRowH * kRows,
+            width: sw,
+            height: kRowH * nRows,
             child: Listener(
               onPointerSignal: (e) {
                 if (e is PointerScrollEvent && area == Area.guide) _act(e.scrollDelta.dy > 0 ? 'down' : 'up');
@@ -990,7 +1005,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                 onVerticalDragEnd: (d) {
                   final v = d.primaryVelocity ?? 0;
                   if (v.abs() < 150 || list.isEmpty || area != Area.guide) return;
-                  final steps = clampI((v.abs() / 500).ceil(), 1, kRows);
+                  final steps = clampI((v.abs() / 500).ceil(), 1, nRows);
                   setState(() {
                     row = clampI(row + (v < 0 ? steps : -steps), 0, list.length - 1);
                     _fixTop();
@@ -1006,7 +1021,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                     cursor = win == minT ? DateTime.now() : win;
                   });
                 },
-                child: Stack(clipBehavior: Clip.none, children: rows),
+                child: Stack(clipBehavior: Clip.none, children: rowW),
               ),
             ),
           ),
@@ -1057,7 +1072,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     if (fcell != null) cells.add(fcell);
     return Stack(clipBehavior: Clip.none, children: [
       Positioned(left: 0, top: 0, width: kChW, height: kRowH, child: _chCell(ch, i, isCur)),
-      Positioned(left: kChW, top: 0, width: kGW, height: kRowH, child: Stack(clipBehavior: Clip.none, children: cells)),
+      Positioned(left: kChW, top: 0, width: sw - kChW, height: kRowH, child: Stack(clipBehavior: Clip.none, children: cells)),
       Positioned(left: 0, right: 0, bottom: 0, height: 1, child: IgnorePointer(child: Container(color: const Color(0x2E000000)))),
     ]);
   }
@@ -1203,8 +1218,8 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       curve: Curves.easeOutCubic,
       left: full ? 0 : 28,
       top: full ? 0 : 26,
-      width: full ? 1280 : 448,
-      height: full ? 720 : 252,
+      width: full ? sw : 448,
+      height: full ? sh : 252,
       child: GestureDetector(
         onTap: () {
           if (area == Area.guide) {
