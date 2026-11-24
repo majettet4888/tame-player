@@ -34,7 +34,7 @@ class AppState extends ChangeNotifier {
   XtreamClient? client;
   AccountInfo? info;
 
-  List<Category> cats = [];
+  List<ChannelGroup> cats = [];
   List<Channel> channels = [];
   Map<int, Channel> byId = {};
   Map<String, int> catCounts = {};
@@ -104,7 +104,7 @@ class AppState extends ChangeNotifier {
     try {
       info = await client!.login();
       final results = await Future.wait([client!.categories(), client!.channels()]);
-      cats = results[0] as List<Category>;
+      cats = results[0] as List<ChannelGroup>;
       final ch = results[1] as List<Channel>;
       byId = {for (final c in ch) c.id: c};
       final counts = <String, int>{};
@@ -151,13 +151,13 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  int countFor(Category c) {
+  int countFor(ChannelGroup c) {
     if (c.id == '__all') return channels.length;
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).length;
     return catCounts[c.id] ?? 0;
   }
 
-  List<Channel> listFor(Category c) {
+  List<Channel> listFor(ChannelGroup c) {
     if (c.id == '__all') return channels;
     if (c.id == '__fav') return channels.where((x) => favs.contains(x.id)).toList();
     return channels.where((x) => x.catId == c.id).toList();

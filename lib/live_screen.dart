@@ -144,7 +144,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   // ---------------------------------------------------------------- helpers
 
-  List<Category> get allCats => [const Category('__all', 'All Channels'), const Category('__fav', 'Favorites'), ...app.cats];
+  List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.cats];
 
   Channel? get cur => (row >= 0 && row < list.length) ? list[row] : null;
   Channel? get playing => playingId == null ? null : app.byId[playingId];

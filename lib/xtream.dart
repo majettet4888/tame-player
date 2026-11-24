@@ -19,9 +19,9 @@ class Account {
       );
 }
 
-class Category {
+class ChannelGroup {
   final String id, name;
-  const Category(this.id, this.name);
+  const ChannelGroup(this.id, this.name);
 }
 
 class Channel {
@@ -106,12 +106,12 @@ class XtreamClient {
     );
   }
 
-  Future<List<Category>> categories() async {
+  Future<List<ChannelGroup>> categories() async {
     final j = await _get({'action': 'get_live_categories'});
     if (j is! List) return [];
     return [
       for (final c in j)
-        if (c is Map) Category('${c['category_id']}', '${c['category_name'] ?? ''}'.trim()),
+        if (c is Map) ChannelGroup('${c['category_id']}', '${c['category_name'] ?? ''}'.trim()),
     ];
   }
 
