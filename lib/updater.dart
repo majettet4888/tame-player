@@ -74,12 +74,16 @@ Future<void> installWindowsUpdate(UpdateInfo u, void Function(double progress) o
     'Start-Process -FilePath ${q(exe)}',
     '',
   ].join('\r\n'));
-  final psArgs = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', script.path];
+  // Run the installer hidden through Windows Script Host (a windowless program), with a log for troubleshooting.
+  final log = '${tmp.path}\\update.log';
+  final ps = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${script.path}" > "$log" 2>&1';
+  final vbs = File('${tmp.path}\\update.vbs');
+  await vbs.writeAsString('CreateObject("WScript.Shell").Run "cmd /c ${ps.replaceAll('"', '""')}", 0, False\r\n');
   try {
-    // conhost --headless runs the installer with no window at all (Windows Terminal ignores "hidden")
-    await Process.start('conhost.exe', ['--headless', 'powershell.exe', ...psArgs], mode: ProcessStartMode.detached);
+    await Process.start('wscript.exe', ['//B', '//Nologo', vbs.path], mode: ProcessStartMode.detached);
   } catch (_) {
-    await Process.start('powershell', psArgs, mode: ProcessStartMode.detached);
+    // last resort: visible window, but it works
+    await Process.start('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script.path], mode: ProcessStartMode.detached);
   }
   onProgress(1);
   await Future.delayed(const Duration(milliseconds: 1500)); // let the app show "installing"
