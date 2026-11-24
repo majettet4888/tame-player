@@ -377,7 +377,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     if (ch == null) return;
     final adding = !app.favs.contains(ch.id);
     app.toggleFav(ch.id);
-    _toast(adding ? '★ Added to Favorites' : 'Removed from Favorites');
+    _toast(adding ? '♥ Added to Favorites' : '♡ Removed from Favorites');
     if (allCats[catIdx].id == '__fav') {
       final id = cur?.id;
       list = app.listFor(allCats[catIdx]);
@@ -473,7 +473,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             _closeSettings();
             _tune(ch);
           }, button: true),
-          _SetItem(fav ? 'Remove from Favorites' : 'Add to Favorites', fav ? '★' : '☆', (d) => _toggleFav(ch), button: true),
+          _SetItem(fav ? 'Remove from Favorites' : 'Add to Favorites', fav ? '♥' : '♡', (d) => _toggleFav(ch), button: true),
           _SetItem('Rename this channel', app.renames.containsKey(ch.id) ? 'renamed' : '', (d) {
             setState(() => area = Area.guide);
             _openInput('rename', initial: app.nameOf(ch));
@@ -1320,7 +1320,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           const SizedBox(width: 10),
           Flexible(child: Text(app.nameOf(ch), maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(18, c: const Color(0xFFB8C8D8)))),
           if (ch.catchup) Text('  ⟲ Catch-up', style: ts(14, c: const Color(0xFF9FD3FF))),
-          if (app.favs.contains(ch.id)) Text('  ★', style: ts(18, c: TP.orange)),
+          if (app.favs.contains(ch.id)) const Padding(padding: EdgeInsets.only(left: 10), child: FavHeart(on: true, size: 20)),
           if (ch.id == playingId) Text('  ▶ Playing', style: ts(14, c: TP.orange)),
         ]),
         const SizedBox(height: 10),
@@ -1528,7 +1528,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
               top: 140,
               child: Text(
                 allCats[clampI(catIdx, 0, allCats.length - 1)].id == '__fav'
-                    ? 'No favorites yet — press ★ (or F) on a channel to add it here.'
+                    ? 'No favorites yet. Hold OK on a channel (or press F) to add one ♥'
                     : 'No channels in this group.',
                 textAlign: TextAlign.center,
                 style: ts(18, c: TP.dim2),
@@ -1594,7 +1594,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
             child: Text(app.nameOf(ch), maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: ts(17, w: FontWeight.w600)),
           ),
           if (ch.catchup) Text(' ⟲', style: ts(14, c: const Color(0xFF9FD3FF))),
-          if (app.favs.contains(ch.id)) Text(' ★', style: ts(15, c: TP.orange)),
+          if (app.favs.contains(ch.id)) const Padding(padding: EdgeInsets.only(left: 6), child: FavHeart(on: true, size: 18)),
         ]),
       ),
     );
@@ -1696,7 +1696,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           SizedBox(width: 26),
           Kbd('OK', 'Watch / Full screen'),
           SizedBox(width: 26),
-          Kbd('★', 'Favorite (F)'),
+          Kbd('♥', 'Favorite (F)'),
           SizedBox(width: 26),
           Kbd('☰', 'Menu (M)'),
           SizedBox(width: 26),
@@ -1811,7 +1811,7 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
           const SizedBox(width: 26),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-              Text('${ch.num} · ${app.nameOf(ch)}${app.favs.contains(ch.id) ? '  ★' : ''}', style: ts(19, c: const Color(0xFFB8C8D8))),
+              Text('${ch.num} · ${app.nameOf(ch)}${app.favs.contains(ch.id) ? '  ♥' : ''}', style: ts(19, c: const Color(0xFFB8C8D8))),
               const SizedBox(height: 4),
               Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: ts(34, w: FontWeight.w800)),
               const SizedBox(height: 6),
@@ -2223,10 +2223,11 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
     final full = _isFull;
     Widget card = const SizedBox.shrink();
     if (m != null) {
-      final match = RegExp(r'^(●|▶|★|❚❚)\s*').firstMatch(m);
+      final match = RegExp(r'^(●|▶|★|❚❚|♥|♡)\s*').firstMatch(m);
       final icon = match?.group(1) ?? 'ℹ';
       final text = match == null ? m : m.substring(match.end);
       final red = icon == '●';
+      final heart = icon == '♥' || icon == '♡';
       card = ClipRRect(
         borderRadius: BorderRadius.circular(14),
         child: BackdropFilter(
@@ -2252,10 +2253,16 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
-                    colors: red ? const [Color(0xFFFF6B6B), Color(0xFFD93636)] : const [TP.orangeLight, TP.orange],
+                    colors: heart
+                        ? const [Color(0xFFFFFFFF), Color(0xFFE9EEF4)]
+                        : (red ? const [Color(0xFFFF6B6B), Color(0xFFD93636)] : const [TP.orangeLight, TP.orange]),
                   ),
                 ),
-                child: Text(icon, style: ts(18, c: red ? Colors.white : const Color(0xFF111111))),
+                child: icon == '♥'
+                    ? FavHeart(key: ValueKey(m), on: true, size: 24)
+                    : icon == '♡'
+                        ? const Icon(Icons.favorite_border, size: 24, color: kHeart)
+                        : Text(icon, style: ts(18, c: red ? Colors.white : const Color(0xFF111111))),
               ),
               const SizedBox(width: 14),
               Text(text, style: ts(19, w: FontWeight.w700, c: Colors.white)),

@@ -192,3 +192,38 @@ class LiftItem extends StatelessWidget {
     );
   }
 }
+
+
+const kHeart = Color(0xFFFF4D6A);
+
+/// Small heart that "fills in" with a little pop when a channel becomes a favorite.
+class FavHeart extends StatelessWidget {
+  final bool on;
+  final double size;
+  const FavHeart({super.key, required this.on, this.size = 18});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!on) return SizedBox(width: size, height: size);
+    return TweenAnimationBuilder<double>(
+      key: const ValueKey('fav-on'),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 650),
+      builder: (context, v, _) {
+        final fill = Curves.easeOutBack.transform(v < 0.25 ? 0 : (v - 0.25) / 0.75);
+        final pop = 1 + 0.35 * (v < 0.6 ? v / 0.6 : (1 - v) / 0.4);
+        return Transform.scale(
+          scale: pop,
+          child: SizedBox(
+            width: size,
+            height: size,
+            child: Stack(alignment: Alignment.center, children: [
+              Icon(Icons.favorite_border, size: size, color: kHeart),
+              Transform.scale(scale: fill, child: Icon(Icons.favorite, size: size, color: kHeart)),
+            ]),
+          ),
+        );
+      },
+    );
+  }
+}
