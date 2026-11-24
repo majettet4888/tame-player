@@ -1549,6 +1549,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
       row = r;
       cursor = p.start.isAfter(now) ? p.start : now;
     });
+    // one click on a show that's on now starts that channel in the preview
+    final ch = list[r];
+    if (!p.start.isAfter(now) && ch.id != playingId) _tune(ch);
   }
 
   void _tapChannel(int i) {
