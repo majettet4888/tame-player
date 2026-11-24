@@ -252,7 +252,10 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
 
   List<ChannelGroup> get allCats => [const ChannelGroup('__all', 'All Channels'), const ChannelGroup('__fav', 'Favorites'), ...app.visibleCats];
 
-  bool get _isFull => area == Area.full || ((area == Area.settings || area == Area.input) && _panelFrom == Area.full);
+  bool get _isFull =>
+      area == Area.full ||
+      ((area == Area.settings || area == Area.input) && _panelFrom == Area.full) ||
+      (area == Area.dialog && _dlgFrom == Area.full);
 
   Channel? get cur => (row >= 0 && row < list.length) ? list[row] : null;
   Channel? get playing => playingId == null ? null : app.byId[playingId];
@@ -784,7 +787,9 @@ class _LiveScreenState extends State<LiveScreen> with SingleTickerProviderStateM
         _optCh = ch;
         area = Area.settings;
         setPage = page;
-        setIdx = 1;
+        final items = _settings;
+        final first = items.indexWhere((x) => !x.header);
+        setIdx = first < 0 ? 0 : first;
       });
 
   // ---------------------------------------------------------------- search / rename / PIN
